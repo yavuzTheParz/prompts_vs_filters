@@ -1,0 +1,29 @@
+struct prompt
+{
+	str input_prompt = "" #ilk jenerasyon için dataset gerisi için inherited
+	str[] output_prompts #Run_LLM() fonksiyonu outputları
+	double fitness
+	enum structre
+	enum content
+}
+
+Run_LLM(str filter, prompt[] prompts)
+{
+	api'a filter ve prompt popülasyonunu teker teker gönder.
+	system olarak prompts[i].input_prompts gönder
+	outputu prompts[i].output_prompts[j]'e eşitlesin
+	return void
+} 
+
+evaluate_fitness(prompt[] prompts)
+{
+	for every prompt in propmts 
+		do evaluation 
+		prompt.fitness = fitness;
+	return void
+}
+
+genetic_algorithm(prompt[] prompts)
+{
+	düz genetik algoritma işte idk
+}
