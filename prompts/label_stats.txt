@@ -1,0 +1,34 @@
+=== STRUCTURE LABEL COUNTS ===
+no_structure: 52016
+question_request: 4154
+imperative_instruction: 1871
+forced_start_constraint: 1234
+context_wipe_reset: 1213
+ignore_all_override: 1107
+role_reprogramming: 352
+poem_request: 193
+threat_coercion: 25
+
+
+=== CONTENT (BEHAVIOR) LABEL COUNTS ===
+benign: 51339
+hacking_cybercrime: 4692
+violence: 3220
+bomb_weapons: 1171
+policy_bypass_jailbreak: 918
+child_safety: 368
+other_illegal: 173
+malware: 46
+misinformation: 23
+fraud_scams: 20
+impersonation: 20
+hate_abuse: 9
+drugs: 9
+harassment_bullying: 6
+sexual_content: 5
+academic_misconduct: 5
+financial_crime: 2
+medical_harm: 1
+chemical_threat: 1
+self_harm: 1
+privacy_invasion: 1
