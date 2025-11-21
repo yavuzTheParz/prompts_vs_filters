@@ -1,4 +1,18 @@
 from bert_score import score as bertscore_score
+from Prompt_class import Prompt, Structure, Content
+
+def callFitness(prompt)
+    if prompt.content == Content.bomb_weapons:
+        ref_output = ""
+    elif prompt.content == Content.hacking_cybercrime:
+        ref_output= ""
+    else:
+        ref_output = ""
+
+     evaluate_fitness(prompt, ref_output, embed_func, sim_func, 0.7, 0.3)
+
+    
+
 
 def evaluate_fitness(
     prompts,          # List[Prompt]
