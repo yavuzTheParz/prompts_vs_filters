@@ -2,6 +2,7 @@ import pandas as pd
 import ast
 from typing import List
 from Prompt_class import Prompt, Structure, Content  # dosya adına göre değiştir
+from fitfunc import fitness
 
 def genetic_algorithm_run(N: int, T: int) -> List[Prompt]:
     """
@@ -16,18 +17,15 @@ def genetic_algorithm_run(N: int, T: int) -> List[Prompt]:
     # İleride burada:
     # - initial population creation
     population = initialize()
-    print(population[0])
+    assign_outputs(population)
 
-    # - fitness hesaplama
+    fitness(population)
     # - selection
     # - crossover
     # - mutation
-    # - survivor selection
-    # vs. adımları olacak.
+    # - survivor_selection
 
     return population
-
-
 
 
 CSV_PATH = "prompts\\initial_population.csv"
@@ -89,4 +87,4 @@ def initialize() -> List[Prompt]:
     return prompts
 
 
-#genetic_algorithm_run(870, 1)
+genetic_algorithm_run(870, 1)

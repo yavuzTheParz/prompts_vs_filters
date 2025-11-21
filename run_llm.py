@@ -1,8 +1,11 @@
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List
+from Prompt_class import Prompt, Structure, Content  # dosya adına göre değiştir
 
-
+def assign_outputs(prompts: List[Prompt])
+    run_llm()
+    
 
 #client: API aslında, filter_prompt: mainden gelir, model_name: hangi LLM'i kullanıyoruz, "gpt-4.1-mini" etc., None: ne return edecek.
 def run_llm(filter_prompt: str, prompts: List[Prompt], client, model_name: str) -> None:
