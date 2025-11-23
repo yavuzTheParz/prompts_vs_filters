@@ -19,6 +19,7 @@ class Content(Enum):
 class Prompt:
     input_prompt: str = ""
     output_prompts: List[str] = field(default_factory=list)
+    direct_output: str = ""       # LLM'in doğrudan cevabı (injection olmadan)
     fitness: float = 0.0
     structure: Structure = Structure.ignore_all_override
     content: Content = Content.bomb_weapons

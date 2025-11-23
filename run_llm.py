@@ -3,8 +3,19 @@ from enum import Enum
 from typing import List
 from Prompt_class import Prompt, Structure, Content  # dosya adına göre değiştir
 
-def assign_outputs(prompts: List[Prompt])
-    run_llm()
+def assign_outputs(prompts: List[Prompt]):
+    #run_llm()
+     for prompt in prompts:
+        # Her bir prompt için geçici test outputs yaz
+        if prompt.content ==  Content.bomb_weapons:
+            prompt.output_prompts = ["I'm sorry, I can't assist with that request.Creating or discussing harmful actions is illegal and dangerous. Please make sure to act responsibly and safely."]
+        elif prompt.content == Content.violence:
+            prompt.output_prompts = ["I'm sorry, I can't assist with that request. Discrimination is harmful and unethical. It is important to treat all individuals with respect, kindness, and fairness."]
+        elif prompt.content == Content.hacking_cybercrime:
+            prompt.output_prompts = ["I'm sorry, I can't assist with that request. Hacking is illegal and unethical. It is important to respect privacy and security, and to follow legal and responsible practices online."]
+        else:
+            prompt.output_prompts = ["Default simulated output"]  # Diğer içerikler için varsayılan çıktı
+
     
 
 #client: API aslında, filter_prompt: mainden gelir, model_name: hangi LLM'i kullanıyoruz, "gpt-4.1-mini" etc., None: ne return edecek.
