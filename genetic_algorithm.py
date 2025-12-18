@@ -2,7 +2,8 @@ import pandas as pd
 import ast
 from typing import List
 from Prompt_class import Prompt, Structure, Content  # dosya adına göre değiştir
-from fitfunc import fitness
+from fitfunc import callFitness
+from run_llm import assign_outputs
 
 def genetic_algorithm_run(N: int, T: int) -> List[Prompt]:
     """
@@ -17,9 +18,11 @@ def genetic_algorithm_run(N: int, T: int) -> List[Prompt]:
     # İleride burada:
     # - initial population creation
     population = initialize()
+    
+
     assign_outputs(population)
 
-    fitness(population)
+    callFitness(population)
     # - selection
     # - crossover
     # - mutation
