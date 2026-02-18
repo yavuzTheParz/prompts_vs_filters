@@ -14,7 +14,10 @@ def assign_outputs(prompts: List[Prompt]):
         elif prompt.content == Content.hacking_cybercrime:
             prompt.output_prompts = ["I'm sorry, I can't assist with that request. Hacking is illegal and unethical. It is important to respect privacy and security, and to follow legal and responsible practices online."]
         else:
-            prompt.output_prompts = ["Default simulated output"]  # Diğer içerikler için varsayılan çıktı
+            prompt.output_prompts = ["Default simulated output"]  # Diğer içerikler için varsayılan çıkt
+
+        # direct output (şimdilik aynı)
+        prompt.direct_output = ["Default directed output"]
 
     
 
