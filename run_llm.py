@@ -1,43 +1,64 @@
-from dataclasses import dataclass, field
-from enum import Enum
 from typing import List
-from Prompt_class import Prompt, Structure, Content  # dosya adına göre değiştir
 
-def assign_outputs(prompts: List[Prompt]):
-    #run_llm()
-     for prompt in prompts:
-        # Her bir prompt için geçici test outputs yaz
-        if prompt.content ==  Content.bomb_weapons:
-            prompt.output_prompts = ["I'm sorry, I can't assist with that request.Creating or discussing harmful actions is illegal and dangerous. Please make sure to act responsibly and safely."]
-        elif prompt.content == Content.violence:
-            prompt.output_prompts = ["I'm sorry, I can't assist with that request. Discrimination is harmful and unethical. It is important to treat all individuals with respect, kindness, and fairness."]
-        elif prompt.content == Content.hacking_cybercrime:
-            prompt.output_prompts = ["I'm sorry, I can't assist with that request. Hacking is illegal and unethical. It is important to respect privacy and security, and to follow legal and responsible practices online."]
-        else:
-            prompt.output_prompts = ["Default simulated output"]  # Diğer içerikler için varsayılan çıktı
+# from Prompt_class import Prompt   # sende zaten var
+from llm_client import LocalLLMClient
 
-    
 
-#client: API aslında, filter_prompt: mainden gelir, model_name: hangi LLM'i kullanıyoruz, "gpt-4.1-mini" etc., None: ne return edecek.
-def run_llm(filter_prompt: str, prompts: List[Prompt], client, model_name: str) -> None:
+def assign_outputs(filter_prompt: str, prompts: List["Prompt"], client, model_name: str) -> None:
     """
-    Filter prompt'u system rolüne, offspring inputlarını user rolüne koyup
-    LLM'e gönderir. Cevapları her Prompt objesinin output_prompts listesine ekler.
+    client:
+      - None ise test mode
+      - LocalLLMClient ise kendi FastAPI server'ına istek atar
+      - (İstersen eski Groq/OpenAI client desteğini koruyacak şekilde de genişletebiliriz)
     """
 
     for prompt_obj in prompts:
-        messages = [
-            {"role": "system", "content": filter_prompt},
-            {"role": "user", "content": prompt_obj.input_prompt},
-        ]
+        if client is None:
+            prompt_obj.output_prompts.append("Test Mode: No API Client provided.")
+            continue
 
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=messages,
-        )
+        try:
+            # --- Server endpoint'in şu an tek string prompt bekliyor ---
+            # Bu yüzden system+user'ı tek metinde birleştiriyoruz.
+            combined_prompt = (
+                f"System:\n{filter_prompt}\n\n"
+                f"User:\n{prompt_obj.input_prompt}\n\n"
+                f"Assistant:"
+            )
 
-        assistant_message = response.choices[0].message.content.strip()
+            if isinstance(client, LocalLLMClient):
+                resp = client.generate(
+                    prompt=combined_prompt,
+                    max_new_tokens=256,
+                    temperature=0.7,
+                    top_p=0.9,
+                    do_sample=True,
+                )
+                assistant_message = resp["text"].strip()
 
-        # Son cevabı logla
-        prompt_obj.output_prompts.append(assistant_message)
+                # Model bazen promptu da geri echo edebilir.
+                # Basit temizlik: "Assistant:" sonrası kısmı almaya çalış.
+                marker = "Assistant:"
+                if marker in assistant_message:
+                    assistant_message = assistant_message.split(marker, 1)[-1].strip()
 
+                prompt_obj.output_prompts.append(assistant_message)
+                continue
+
+            # --- (Opsiyonel) Eski Groq/OpenAI yolu kalsın istersen ---
+            # Burayı kaldırabilirsin.
+            messages = [
+                {"role": "system", "content": filter_prompt},
+                {"role": "user", "content": prompt_obj.input_prompt},
+            ]
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=0.7
+            )
+            assistant_message = response.choices[0].message.content.strip()
+            prompt_obj.output_prompts.append(assistant_message)
+
+        except Exception as e:
+            print(f"   [API ERROR]: {e}")
+            prompt_obj.output_prompts.append("Error: Could not fetch response.")
