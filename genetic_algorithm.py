@@ -19,7 +19,7 @@ from llm_client import LocalLLMClient
 
 
 
-
+coefficient = 4
 
 CSV_PATH = "prompts\\initial_population.csv"
 
@@ -164,6 +164,19 @@ def genetic_algorithm_run(N: int, T: int, client=None):
         survivors = population[:elite_count]
 
         print(f">> {len(survivors)} elite birey seçildi. {N - len(survivors)} yeni çocuk üretilecek.")
+
+        if generation % coefficient == 0:
+            # Popülasyondaki en iyi (en çok bypass eden) 5-10 promptu seç
+            top_attackers = [p.input_prompt for p in population[:5]]
+            
+            # Filtreyi güncelle (Burada 'client' olarak OpenAI veya LocalLLMClient hangisini kullanıyorsan onu ver)
+            filter_prompt = evolve_filter(
+                current_filter=filter_prompt,
+                top_attack_prompts=top_attackers,
+                benign_set=benign_set, # Sabit, güvenli sorulardan oluşan bir listeniz olmalı
+                client=client,
+                model_name="gpt-4" # veya kullandığınız model
+            )
 
         # 4) MUTATION 
         offspring = []
