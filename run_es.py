@@ -28,6 +28,7 @@ def build_client(args) -> Optional[LocalLLMClient]:
             "No local LLM server configured. Running in dry-run mode.\n"
             "For real evaluation, pass --base-url or set LOCAL_LLM_BASE_URL."
         )
+        args.dry_run = True
         return None
 
     return LocalLLMClient(
@@ -67,7 +68,7 @@ def parse_args():
     parser.add_argument("--base-url", default=None, help="Local LLM server URL, e.g. http://127.0.0.1:8000")
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--timeout", type=int, default=180)
-    parser.add_argument("--dry-run", action="store_true", help="Run without an LLM server using deterministic placeholder outputs")
+    parser.add_argument("--dry-run", action="store_true", help="Run without an LLM server or heavy ML dependencies")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--history-csv", default="outputs/es_history.csv")
     parser.add_argument("--quiet", action="store_true")
@@ -90,6 +91,7 @@ def main():
         csv_path=args.csv,
         verbose=not args.quiet,
         random_seed=args.seed,
+        lightweight=args.dry_run,
     )
 
     result = evolutionary_strategy_run(
