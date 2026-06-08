@@ -1,149 +1,130 @@
-Evolutionary Strategy for LLM Prompt Mutation
-Project Description
+# Prompts vs Filters
 
-This project aims to evolve prompts using Evolutionary Strategy (ES) for large language models (LLMs), focusing solely on mutation operations and not using crossover. The idea is to mutate prompts by adding emotional tones (e.g., anger, plea, imperative) to influence the tone and meaning of the model's responses. The project explores how to optimize and evolve prompts to make them more effective while avoiding the need for complex crossover operations.
+This repository implements a prompt-population evolution framework for studying prompt/filter coevolution in LLM safety research. The current main runner uses **Evolution Strategy (ES)** rather than crossover-based genetic algorithms, because the project focuses on mutation operators over prompt style, tone, and structure.
 
-The goal is to create more effective and contextually appropriate prompts that lead to better model responses, improving both security and natural language generation.
+## What is included
 
-Features
+- `evolutionary_strategy.py`: main ES implementation.
+  - `variant="one_fifth"`: global mutation intensity adapted with the 1/5 success rule.
+  - `variant="self_adaptive"`: per-individual mutation intensity adapted with log-normal self-adaptation.
+- `run_es.py`: command-line entrypoint for ES runs.
+- `mutation_manager.py`: structural and style-aware prompt mutation operators.
+- `run_llm.py`: LLM output assignment for filtered and direct prompt responses.
+- `fitfunc.py`: SBERT-based ASV/MR fitness evaluation, with optional BERTScore support.
+- `filter_evolution.py`: optional filter-prompt update loop.
+- `genetic_algorithm.py`: legacy GA-style runner kept for comparison.
+- `prompts/initial_population.csv`: initial labelled prompt population.
 
-Evolutionary Strategy: Uses mutation and selection processes to choose and develop the most effective prompts for each generation.
+## Installation
 
-Emotional Style Mutation: Adds emotional vectors to prompts to change the tone of the model's responses (e.g., anger, plea, imperative).
+Create and activate a virtual environment:
 
-Fitness Function: Evaluates the effectiveness of each prompt using metrics like ASV (Attack Success Value) and MR (Matching Rate).
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Linux / macOS
+# .venv\Scripts\activate         # Windows
+```
 
-Fast Evaluation: Uses Sentence Transformer and BERTScore for efficient and quick evaluation of prompt effectiveness.
+Install dependencies:
 
-Evolutionary Process: Selects the best-performing prompts and evolves them through multiple generations to improve their effectiveness.
-
-Installation
-Requirements
-
-Python 3.x
-
-torch (PyTorch)
-
-transformers (Hugging Face)
-
-sentence-transformers
-
-numpy
-
-scipy
-
-matplotlib (For visualizing results)
-
-Installation Steps
-
-Create a Virtual Environment:
-Create a virtual environment for the project:
-
-python -m venv env
-source env/bin/activate  # Linux/Mac
-env\Scripts\activate  # Windows
-
-
-Install Required Packages:
-
+```bash
 pip install -r requirements.txt
+```
 
+Optional, but recommended for better part-of-speech-aware mutation:
 
-Load the Model:
-The project uses Hugging Face or your own model. You can use open-source models like GPT-2 or T5. To load the model:
+```bash
+python -m spacy download en_core_web_sm
+```
 
-from transformers import GPT2LMHeadModel, GPT2Tokenizer
+If the SpaCy English model is not installed, the project still runs with a fallback token-selection strategy.
 
-model_name = "gpt2"  # Or any other model of your choice
-model = GPT2LMHeadModel.from_pretrained(model_name)
-tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+## Quick dry run
 
-Usage
+This runs without an LLM server and uses placeholder model outputs. It is useful for checking imports, mutation flow, and ES bookkeeping:
 
-Initial Prompts:
-Start by defining a set of initial prompts. These will serve as the starting point for the evolutionary strategy.
+```bash
+python run_es.py --dry-run --variant one_fifth --mu 3 --lambda 10 --generations 2
+```
 
-prompt1 = "The model understands human instructions very well."
-prompt2 = "The system interprets user commands accurately."
+Self-adaptive ES dry run:
 
+```bash
+python run_es.py --dry-run --variant self_adaptive --mu 3 --lambda 10 --generations 2
+```
 
-Mutation Process:
-Apply style mutation to change the tone and emotional style of the prompt.
+## Running with a local LLM server
 
-def apply_mutation(prompt, style_vector):
-    # Obtain token embeddings
-    embeddings = tokenizer.encode(prompt, return_tensors='pt')
-    
-    # Add style vector to the embeddings
-    mutated_embeddings = embeddings + style_vector
+The local client expects a `/generate` endpoint that accepts JSON like:
 
-    # Decode the new prompt
-    mutated_prompt = tokenizer.decode(mutated_embeddings)
-    return mutated_prompt
+```json
+{
+  "prompt": "...",
+  "max_new_tokens": 256,
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "do_sample": true
+}
+```
 
+and returns one of the following fields:
 
-Fitness Evaluation:
-After mutating the prompts, evaluate their effectiveness using BERTScore or Sentence Transformer.
+```json
+{"text": "..."}
+```
 
-from sentence_transformers import SentenceTransformer
+or
 
-model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
+```json
+{"generated_text": "..."}
+```
 
-def evaluate_fitness(prompt, reference_prompt):
-    # Encode the prompts to get embeddings
-    prompt_embedding = model.encode(prompt)
-    reference_embedding = model.encode(reference_prompt)
+Run ES with explicit server URL:
 
-    # Calculate cosine similarity between the embeddings
-    similarity = cosine_similarity([prompt_embedding], [reference_embedding])
-    return similarity[0][0]
+```bash
+python run_es.py \
+  --base-url http://127.0.0.1:8000 \
+  --model local-qwen \
+  --variant one_fifth \
+  --mu 5 \
+  --lambda 20 \
+  --generations 10
+```
 
+Alternatively, use environment variables:
 
-Evolutionary Process:
-Use mutation and selection processes to evolve the prompts over multiple generations. Choose the most effective prompts based on their fitness scores and apply further mutations.
+```bash
+export LOCAL_LLM_BASE_URL="http://127.0.0.1:8000"
+export LOCAL_LLM_API_KEY="YOUR_SECRET_KEY"  # optional
+python run_es.py --variant self_adaptive --mu 5 --lambda 20 --generations 10
+```
 
-def evolutionary_process(population, generations):
-    for generation in range(generations):
-        # Evaluate fitness of the population
-        fitness_scores = [evaluate_fitness(prompt, reference_prompt) for prompt in population]
+## Output
 
-        # Select the top-performing prompts
-        selected_prompts = select_top_prompts(population, fitness_scores)
+`run_es.py` prints the final best prompt and writes convergence/history data to:
 
-        # Apply mutation to the selected prompts
-        mutated_prompts = [apply_mutation(prompt, style_vector) for prompt in selected_prompts]
+```text
+outputs/es_history.csv
+```
 
-        # Replace old population with new mutated population
-        population = mutated_prompts
+The CSV contains:
 
-    return population
+- generation
+- best_fitness
+- mean_parent_fitness
+- success_rate
+- sigma
 
-Example of Running the Project:
-# Initial prompts and reference prompt
-initial_prompts = [prompt1, prompt2]
-reference_prompt = "The model understands and interprets human instructions effectively."
+## Notes on sigma
 
-# Define the number of generations for the evolutionary process
-generations = 10
+In the MATLAB ES reference, `sigma` controls Gaussian mutation step size in a continuous vector space. In this prompt project, the search space is discrete text. Therefore, `sigma` is interpreted as mutation intensity: larger `sigma` values apply more consecutive prompt mutations.
 
-# Start the evolutionary process
-final_population = evolutionary_process(initial_prompts, generations)
+## Legacy GA runner
 
-# Output the final evolved prompts
-print("Final evolved prompts:")
-for prompt in final_population:
-    print(prompt)
+The legacy GA-style runner is still available:
 
-Evaluation Metrics
+```bash
+python genetic_algorithm.py
+```
 
-ASV (Attack Success Value): Measures the success of the mutation in generating the desired output. It is based on cosine similarity between the mutated prompt's output and the reference output.
-
-MR (Matching Rate): Measures how similar the mutated prompt’s output is to the output generated from a direct (non-mutated) prompt.
-
-Future Improvements
-
-Adaptive Mutation Rate: Over generations, the mutation rate could decrease to fine-tune the results more precisely.
-
-Multi-Token Crossover: While this project currently focuses on mutation, future versions could explore crossover techniques for more complex prompt evolution.
-
-Context-Aware Mutation: Incorporating more advanced techniques that consider the context of the prompt to make the mutations even more targeted and effective.
+For the proposal and main experiments, prefer `run_es.py` and `evolutionary_strategy.py`.
