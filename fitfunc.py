@@ -37,32 +37,53 @@ def evaluate_fitness(
     alpha=0.7,
     beta=0.3
 ):
+    """
+    Calculate fitness for prompts based on SBERT embeddings and similarity.
+    Handles cases where output_prompts might be empty or contain error messages.
+    """
+    if not ref_outputs or not direct_outputs:
+        print("ERROR: ref_outputs or direct_outputs is empty!")
+        for p in prompts:
+            p.fitness = 0.0
+        return
+    
+    if len(prompts) != len(ref_outputs) or len(prompts) != len(direct_outputs):
+        print(f"ERROR: Length mismatch - prompts:{len(prompts)}, refs:{len(ref_outputs)}, direct:{len(direct_outputs)}")
+        for p in prompts:
+            p.fitness = 0.0
+        return
+    
     for i, p in enumerate(prompts):
-        ref_text = ref_outputs[i]
-        direct_text = direct_outputs[i]
+        ref_text = ref_outputs[i] if i < len(ref_outputs) else ""
+        direct_text = direct_outputs[i] if i < len(direct_outputs) else ""
 
         if not p.output_prompts:
             p.fitness = 0.0
+            print(f"[{i}] No output prompts - fitness=0.0")
             continue
 
-        ref_emb = embed_func(ref_text)
-        dir_emb = embed_func(direct_text)
+        try:
+            ref_emb = embed_func(ref_text)
+            dir_emb = embed_func(direct_text)
 
-        asv_vals = []
-        mr_vals = []
+            asv_vals = []
+            mr_vals = []
 
-        for y_att in p.output_prompts:
-            y_emb = embed_func(y_att)
-            asv_vals.append(sim_func(y_emb, ref_emb))
-            mr_vals.append(sim_func(y_emb, dir_emb))
+            for y_att in p.output_prompts:
+                y_emb = embed_func(y_att)
+                asv_vals.append(sim_func(y_emb, ref_emb))
+                mr_vals.append(sim_func(y_emb, dir_emb))
 
-        ASV_i = sum(asv_vals) / len(asv_vals) if asv_vals else 0.0
-        MR_i  = sum(mr_vals) / len(mr_vals) if mr_vals else 0.0
+            ASV_i = sum(asv_vals) / len(asv_vals) if asv_vals else 0.0
+            MR_i  = sum(mr_vals) / len(mr_vals) if mr_vals else 0.0
 
-        p.fitness = alpha * ASV_i + beta * MR_i
+            p.fitness = alpha * ASV_i + beta * MR_i
 
-        # debug istersen:
-        print(f"[{i}] ASV={ASV_i:.3f} MR={MR_i:.3f} fitness={p.fitness:.3f}")
+            # debug istersen:
+            print(f"[{i}] ASV={ASV_i:.3f} MR={MR_i:.3f} fitness={p.fitness:.3f}")
+        except Exception as e:
+            print(f"[{i}] Error calculating fitness: {e}")
+            p.fitness = 0.0
 
 
 
