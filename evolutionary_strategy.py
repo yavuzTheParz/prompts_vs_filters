@@ -2,14 +2,11 @@
 """
 Evolution Strategy (ES) runner for prompt populations.
 
-This module is a Python adaptation of the MATLAB ES implementations shared with the
-project, adjusted for the current discrete prompt-search setting. Since prompts do not
-live in a continuous vector space, sigma is interpreted as mutation intensity: larger
-sigma values apply more consecutive prompt mutations through mutation_manager.
-
-Supported variants:
-- one_fifth: global sigma adapted with the 1/5 success rule.
-- self_adaptive: per-individual sigma adapted with log-normal self-adaptation.
+This module adapts the MATLAB ES variants to the current prompt-search setting.
+For real runs, prompt mutation uses mutation_manager + BERT. For dry-runs, the
+module can run in lightweight mode without importing transformers, sklearn, or
+sentence-transformers. This is useful for checking the ES bookkeeping on machines
+where native ML dependencies are unavailable or blocked by OS policy.
 """
 
 from __future__ import annotations
@@ -22,11 +19,8 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
-from transformers import BertForMaskedLM, BertTokenizer
 
 from Prompt_class import Content, Prompt, Structure
-from fitfunc import callFitness
-from mutation_manager import StyleManager, TemplateManager, hybrid_mutate_optimized
 from run_llm import assign_outputs
 
 
@@ -51,6 +45,7 @@ class ESConfig:
     neutral_style_policy: str = "random"  # "random" or "skip"
     verbose: bool = True
     random_seed: Optional[int] = None
+    lightweight: bool = False  # True for dry-runs without heavy ML imports
 
 
 @dataclass
@@ -169,14 +164,32 @@ def _mutation_repetitions(sigma: float, sigma_min: float, sigma_max: float) -> i
     return max(1, min(int(math.ceil(sigma_max)), reps))
 
 
+def _lightweight_mutate_text(text: str, style: Optional[str]) -> Tuple[str, str]:
+    """Very small mutation used only for dependency-free dry-runs."""
+    text = text or ""
+    if style == "plea":
+        choices = [
+            ("Please, " + text, "LW_PREFIX_PLEA"),
+            (text.rstrip(".") + ", please.", "LW_SUFFIX_PLEA"),
+        ]
+    elif style == "imperative":
+        choices = [
+            ("You must " + text[:1].lower() + text[1:], "LW_PREFIX_IMPERATIVE"),
+            (text.rstrip(".") + ", immediately.", "LW_SUFFIX_IMPERATIVE"),
+        ]
+    else:
+        choices = [(text + " Please respond carefully.", "LW_NEUTRAL")]
+    return random.choice(choices)
+
+
 def _mutate_prompt(
     parent: Prompt,
     sigma: float,
     config: ESConfig,
-    template_manager: TemplateManager,
-    style_manager: StyleManager,
-    tokenizer: BertTokenizer,
-    bert_model: BertForMaskedLM,
+    template_manager=None,
+    style_manager=None,
+    tokenizer=None,
+    bert_model=None,
 ) -> Tuple[Prompt, List[str]]:
     child = _clone_prompt(parent, keep_outputs=False)
     logs: List[str] = []
@@ -187,14 +200,18 @@ def _mutate_prompt(
         if style is None:
             logs.append("NO_STYLE")
             continue
-        new_text, log = hybrid_mutate_optimized(
-            child.input_prompt,
-            style,
-            template_manager,
-            style_manager,
-            tokenizer,
-            bert_model,
-        )
+
+        if config.lightweight:
+            new_text, log = _lightweight_mutate_text(child.input_prompt, style)
+        else:
+            new_text, log = _heavy_mutate_text(
+                child.input_prompt,
+                style,
+                template_manager,
+                style_manager,
+                tokenizer,
+                bert_model,
+            )
         child.input_prompt = new_text
         logs.append(log)
 
@@ -203,17 +220,46 @@ def _mutate_prompt(
     return child, logs
 
 
+def _heavy_mutate_text(text, style, template_manager, style_manager, tokenizer, bert_model):
+    """Lazy import heavy mutation dependencies only for real runs."""
+    if template_manager is None or style_manager is None or tokenizer is None or bert_model is None:
+        raise RuntimeError("Heavy mutation requested without initialized mutation objects")
+    from mutation_manager import hybrid_mutate_optimized
+
+    return hybrid_mutate_optimized(
+        text,
+        style,
+        template_manager,
+        style_manager,
+        tokenizer,
+        bert_model,
+    )
+
+
+def _lightweight_evaluator(population: List[Prompt]) -> None:
+    """Deterministic dependency-free evaluator used only for dry-runs."""
+    for p in population:
+        # Simple score: reward changed/longer prompts and stable deterministic noise.
+        length_score = min(len(p.input_prompt) / 300.0, 1.0)
+        output_score = 0.1 if p.output_prompts else 0.0
+        p.fitness = 0.5 * length_score + output_score
+
+
 def _evaluate_population(
     population: List[Prompt],
     filter_prompt: str,
     client,
     model_name: str,
     evaluator: FitnessEvaluator,
+    lightweight: bool = False,
 ) -> None:
     unevaluated = [p for p in population if not p.output_prompts]
     if unevaluated:
         assign_outputs(filter_prompt, unevaluated, client, model_name=model_name)
-    evaluator(population)
+    if lightweight:
+        _lightweight_evaluator(population)
+    else:
+        evaluator(population)
 
 
 def _survival_plus(parents: List[Prompt], offspring: List[Prompt], mu: int) -> List[Prompt]:
@@ -226,6 +272,19 @@ def _survival_comma(offspring: List[Prompt], mu: int) -> List[Prompt]:
 
 def _best_of(population: List[Prompt]) -> Prompt:
     return _sort_best_first(population)[0]
+
+
+def _load_heavy_mutation_objects():
+    """Load transformers and mutation managers only when a real run needs them."""
+    from transformers import BertForMaskedLM, BertTokenizer
+    from mutation_manager import StyleManager, TemplateManager
+
+    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+    bert_model = BertForMaskedLM.from_pretrained("bert-base-uncased")
+    bert_model.eval()
+    style_manager = StyleManager()
+    template_manager = TemplateManager()
+    return template_manager, style_manager, tokenizer, bert_model
 
 
 # -----------------------------
@@ -241,7 +300,7 @@ def evolutionary_strategy_run(
         "Reject harmful requests."
     ),
     initial_population: Optional[List[Prompt]] = None,
-    evaluator: FitnessEvaluator = callFitness,
+    evaluator: Optional[FitnessEvaluator] = None,
 ) -> ESRunResult:
     """
     Run an Evolution Strategy over prompt populations.
@@ -250,8 +309,9 @@ def evolutionary_strategy_run(
     ----------
     config:
         ES configuration. Use variant="one_fifth" or variant="self_adaptive".
+        Set lightweight=True for dependency-free dry-runs.
     client:
-        LLM client compatible with run_llm.assign_outputs.
+        LLM client compatible with run_llm.assign_outputs. Use None for dry-run.
     model_name:
         Model identifier passed to assign_outputs.
     filter_prompt:
@@ -259,7 +319,7 @@ def evolutionary_strategy_run(
     initial_population:
         Optional preloaded Prompt list. If omitted, prompts are read from config.csv_path.
     evaluator:
-        Fitness function. Defaults to fitfunc.callFitness.
+        Fitness function. If omitted, fitfunc.callFitness is lazy-imported for real runs.
     """
     if config.random_seed is not None:
         random.seed(config.random_seed)
@@ -274,12 +334,15 @@ def evolutionary_strategy_run(
     if variant not in {"one_fifth", "self_adaptive"}:
         raise ValueError("config.variant must be either 'one_fifth' or 'self_adaptive'")
 
-    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-    bert_model = BertForMaskedLM.from_pretrained("bert-base-uncased")
-    bert_model.eval()
-
-    style_manager = StyleManager()
-    template_manager = TemplateManager()
+    if config.lightweight:
+        template_manager = style_manager = tokenizer = bert_model = None
+        if evaluator is None:
+            evaluator = _lightweight_evaluator
+    else:
+        template_manager, style_manager, tokenizer, bert_model = _load_heavy_mutation_objects()
+        if evaluator is None:
+            from fitfunc import callFitness
+            evaluator = callFitness
 
     source_population = initial_population or load_prompt_population(config.csv_path)
     if len(source_population) < config.mu:
@@ -289,7 +352,7 @@ def evolutionary_strategy_run(
     parents = [_clone_prompt(p, keep_outputs=False) for p in parents]
 
     start = time.time()
-    _evaluate_population(parents, filter_prompt, client, model_name, evaluator)
+    _evaluate_population(parents, filter_prompt, client, model_name, evaluator, config.lightweight)
     parents = _sort_best_first(parents)
     best = _clone_prompt(parents[0], keep_outputs=True)
 
@@ -303,7 +366,7 @@ def evolutionary_strategy_run(
         offspring_sigmas: List[float] = []
 
         if variant == "self_adaptive":
-            dim = 1.0  # Text prompts use one scalar strategy parameter per individual.
+            dim = 1.0
             tau = 1.0 / math.sqrt(2.0 * math.sqrt(dim))
             tau_prime = 1.0 / math.sqrt(2.0 * dim)
 
@@ -341,7 +404,7 @@ def evolutionary_strategy_run(
             offspring.append(child)
             offspring_parent_indices.append(parent_idx)
 
-        _evaluate_population(offspring, filter_prompt, client, model_name, evaluator)
+        _evaluate_population(offspring, filter_prompt, client, model_name, evaluator, config.lightweight)
 
         successes = sum(
             1 for child, p_idx in zip(offspring, offspring_parent_indices)
@@ -409,18 +472,9 @@ def evolutionary_strategy_run(
 
 
 if __name__ == "__main__":
-    # Example only. In real runs, pass the same client object used by run_llm.py.
-    from llm_client import LocalLLMClient
-
-    local_client = LocalLLMClient(
-        base_url="http://127.0.0.1:8000",
-        api_key="YOUR_SECRET_KEY",
-        timeout_sec=180,
-    )
-
     result = evolutionary_strategy_run(
-        ESConfig(lambda_=10, mu=3, generations=5, variant="one_fifth"),
-        client=local_client,
+        ESConfig(lambda_=10, mu=3, generations=5, variant="one_fifth", lightweight=True),
+        client=None,
         model_name="local-qwen",
     )
     print("Best fitness:", result.best.fitness)
