@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import List
+import os
+from typing import List, Optional
 
 from llm_client import LocalLLMClient
 
@@ -48,13 +49,24 @@ def _generate(client, prompt: str, model_name: str, temperature: float = 0.7) ->
     return response.choices[0].message.content.strip()
 
 
+def _resolve_k_evals(k_evals: Optional[int]) -> int:
+    if k_evals is None:
+        raw = os.getenv("PROMPTS_VS_FILTERS_K_EVALS", "1")
+    else:
+        raw = k_evals
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 1
+
+
 def assign_outputs(
     filter_prompt: str,
     prompts: List["Prompt"],
     client,
     model_name: str = "local-qwen",
     generate_direct: bool = True,
-    k_evals: int = 1,
+    k_evals: Optional[int] = None,
 ) -> None:
     """
     Populate Prompt.output_prompts using the current filter prompt.
@@ -64,7 +76,7 @@ def assign_outputs(
     is generated once per prompt without the defensive filter context and reused as
     the MR baseline.
     """
-    k_evals = max(1, int(k_evals or 1))
+    k_evals = _resolve_k_evals(k_evals)
 
     for prompt_obj in prompts:
         try:
