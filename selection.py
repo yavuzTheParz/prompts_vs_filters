@@ -235,7 +235,7 @@ def sort_population_rank_partitioning(
 
     fit_array = np.zeros((len(population), 6), dtype=float)
 
-    for i, p in enumerate(popation := population):
+    for i, p in enumerate(population):
         fit_array[i, gas["fitIdx"]["originalIndex"]] = i
         fit_array[i, gas["fitIdx"]["asv"]] = get_metric(p, "asv")
         fit_array[i, gas["fitIdx"]["mr"]] = get_metric(p, "mr")
