@@ -57,8 +57,13 @@ def write_history_csv(path: str, history):
         "best_diversity",
         "best_length_penalty",
         "best_repetition_penalty",
+        "filter_attempted",
         "filter_changed",
         "filter_length",
+        "filter_old_attack_refusal_rate",
+        "filter_new_attack_refusal_rate",
+        "filter_old_benign_refusal_rate",
+        "filter_new_benign_refusal_rate",
     ]
     with output_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -72,6 +77,12 @@ def _safe_asdict(config: ESConfig) -> dict:
     # Tuples are JSON serializable as lists, but this keeps the output explicit.
     data["mutation_styles"] = list(config.mutation_styles)
     return data
+
+
+def _write_jsonl(path: Path, rows) -> None:
+    with path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
@@ -92,20 +103,15 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     )
 
     write_history_csv(str(root / "generation_summary.csv"), result.history)
-
-    # This is the current minimum persistent filter artifact. Full per-update filter
-    # versioning should be added inside evolutionary_strategy.py in the next sprint.
     (root / "final_filter_prompt.txt").write_text(result.filter_prompt, encoding="utf-8")
 
-    filter_events_path = root / "filter_events.jsonl"
-    with filter_events_path.open("w", encoding="utf-8") as f:
-        for row in result.history:
-            event = {
-                "generation": row.get("generation"),
-                "filter_changed": row.get("filter_changed", 0.0),
-                "filter_length": row.get("filter_length", len(result.filter_prompt)),
-            }
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    # Full filter-event provenance. Each row contains the attempted rule, evaluation
+    # rates, accept/reject decision, and the old/candidate/final filter text.
+    _write_jsonl(root / "filter_events.jsonl", getattr(result, "filter_events", []))
+
+    # Compact chronological version history. Version 0 is the initial filter; later
+    # versions are only accepted updates.
+    _write_jsonl(root / "filter_versions.jsonl", getattr(result, "filter_versions", []))
 
 
 def parse_args():
@@ -175,6 +181,8 @@ def main():
     print(f"Best fitness: {result.best.fitness:.4f}")
     print(f"Best prompt: {result.best.input_prompt}")
     print(f"Final filter length: {len(result.filter_prompt)} chars")
+    print(f"Filter update attempts: {len(getattr(result, 'filter_events', []))}")
+    print(f"Accepted filter versions: {max(0, len(getattr(result, 'filter_versions', [])) - 1)}")
     if args.history_csv:
         print(f"History written to: {args.history_csv}")
     if args.run_dir:
