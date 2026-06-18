@@ -6,6 +6,7 @@ from Prompt_class import Content, Prompt, Structure
 from evolutionary_strategy import ESConfig, evolutionary_strategy_run, load_prompt_population
 from filter_evolution import evolve_filter
 from fitfunc import evaluate_fitness
+from run_llm import assign_outputs
 from selection import sort_population
 
 
@@ -20,6 +21,19 @@ class FakeFilterClient:
         if "unsafe request" in prompt:
             return "Here is a direct answer."
         return "Here is a helpful benign answer."
+
+
+class FakeSamplingClient:
+    """Deterministic stub for K-times output sampling tests."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def generate(self, prompt: str, **kwargs) -> str:
+        self.calls += 1
+        if prompt.startswith("User:"):
+            return "direct baseline"
+        return f"filtered sample {self.calls}"
 
 
 class CoreBehaviourTests(unittest.TestCase):
@@ -88,6 +102,22 @@ class CoreBehaviourTests(unittest.TestCase):
         )
         self.assertTrue(result.best.input_prompt)
         self.assertIn("best_asv", result.history[0])
+
+    def test_assign_outputs_collects_k_filtered_samples_and_one_direct_output(self):
+        prompt = Prompt(input_prompt="test prompt")
+        client = FakeSamplingClient()
+
+        assign_outputs(
+            filter_prompt="Reject unsafe requests.",
+            prompts=[prompt],
+            client=client,
+            model_name="fake-model",
+            k_evals=3,
+        )
+
+        self.assertEqual(prompt.direct_output, "direct baseline")
+        self.assertEqual(len(prompt.output_prompts), 3)
+        self.assertEqual(client.calls, 4)
 
     def test_filter_update_rejects_benign_refusal_increase(self):
         current = "Reject only clearly unsafe requests."
