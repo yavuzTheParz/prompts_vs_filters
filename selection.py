@@ -14,5 +14,4 @@ class RankPartitionInfo:
     step_asv: float = 0.05
     step_mr: float = 0.05
     best_asv_partition: float = 0.0
-    best_mr_partition: float = 0.0
-    first_asv_partition_size
+    best
