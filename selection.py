@@ -28,16 +28,32 @@ def scalar_key(p: Prompt) -> float:
     return _flt(getattr(p, "fitness", 0.0))
 
 
+def lexicographic_key(p: Prompt) -> Tuple[float, float]:
+    """
+    Proposal-aligned objective ordering.
+
+    ASV is maximized. MR is a similarity-to-direct-output metric, so lower MR means
+    stronger behavioral deviation. The second key therefore maximizes 1 - MR.
+    """
+    asv = get_metric(p, "asv")
+    mr = get_metric(p, "mr")
+    return (asv, 1.0 - mr)
+
+
 # ============================================================
 # Numpy rank-partitioning evaluator
 # ============================================================
 
 def ranking_evaluation(gas: dict, fit_array: np.ndarray) -> np.ndarray:
     """
-    Rank-partitioning evaluation for two maximization objectives:
+    Rank-partitioning evaluation for the proposal objectives:
 
-        1. ASV  -> maximize, primary objective
-        2. MR   -> maximize, secondary objective
+        1. ASV -> maximize, primary objective
+        2. MR  -> minimize, secondary objective
+
+    MR remains stored and reported as a similarity metric. Ranking uses lower MR
+    because lower attacked-vs-direct similarity indicates stronger behavioral
+    deviation.
 
     Logic preserved from the original code:
         1. Modulo arithmetic partitioning
@@ -60,6 +76,8 @@ def ranking_evaluation(gas: dict, fit_array: np.ndarray) -> np.ndarray:
     """
 
     fit_array = np.asarray(fit_array, dtype=float).copy()
+    if fit_array.size == 0:
+        return fit_array
 
     idx = gas["fitIdx"]
 
@@ -88,16 +106,15 @@ def ranking_evaluation(gas: dict, fit_array: np.ndarray) -> np.ndarray:
     # ------------------------------------------------------------
     # np.lexsort uses the LAST key as the primary key.
     #
-    # Since ASV and MR are maximization objectives, we sort by
-    # negative values:
+    # ASV is maximized, MR is minimized:
     #
     #   primary:   -ASV_partition
-    #   secondary: -MR_partition
+    #   secondary:  MR_partition
     #
     # This means:
     #   max ASV partition first,
-    #   then max MR partition.
-    sort_tuple_initial = (-f_mr_mod, -f_asv_mod)
+    #   then min MR partition.
+    sort_tuple_initial = (f_mr_mod, -f_asv_mod)
     initial_order = np.lexsort(sort_tuple_initial)
     fit_array = fit_array[initial_order]
 
@@ -123,7 +140,7 @@ def ranking_evaluation(gas: dict, fit_array: np.ndarray) -> np.ndarray:
     #
     # priority:
     #   1. max raw ASV
-    #   2. max raw MR
+    #   2. min raw MR
     start = 0
 
     for i in range(fit_array.shape[0]):
@@ -134,20 +151,19 @@ def ranking_evaluation(gas: dict, fit_array: np.ndarray) -> np.ndarray:
             b_asv_raw = block[:, idx["asv"]]
             b_mr_raw = block[:, idx["mr"]]
 
-            block_order = np.lexsort((-b_mr_raw, -b_asv_raw))
+            block_order = np.lexsort((b_mr_raw, -b_asv_raw))
             fit_array[start:stop] = block[block_order]
 
             start = stop
 
     # Important: sort the final block too.
-    # The original code did not process the last block after the loop.
     if start < fit_array.shape[0]:
         block = fit_array[start:]
 
         b_asv_raw = block[:, idx["asv"]]
         b_mr_raw = block[:, idx["mr"]]
 
-        block_order = np.lexsort((-b_mr_raw, -b_asv_raw))
+        block_order = np.lexsort((b_mr_raw, -b_asv_raw))
         fit_array[start:] = block[block_order]
 
     # ------------------------------------------------------------
@@ -173,6 +189,9 @@ def ranking_evaluation(gas: dict, fit_array: np.ndarray) -> np.ndarray:
     )
 
     gas["ranking"]["maxASVPartition"] = float(first_asv_mod_val)
+    gas["ranking"]["minMRPartition"] = float(first_mr_mod_val)
+    # Backward-compatible field name. In proposal-aligned ranking this is the MR
+    # partition of the best lexicographic block, not a maximum objective.
     gas["ranking"]["maxMRPartition"] = float(first_mr_mod_val)
 
     return fit_array
@@ -196,6 +215,8 @@ def sort_population_rank_partitioning(
     """
 
     population = list(population)
+    if not population:
+        return [], {}
 
     gas = {
         "ranking": {
@@ -214,7 +235,7 @@ def sort_population_rank_partitioning(
 
     fit_array = np.zeros((len(population), 6), dtype=float)
 
-    for i, p in enumerate(population):
+    for i, p in enumerate(popation := population):
         fit_array[i, gas["fitIdx"]["originalIndex"]] = i
         fit_array[i, gas["fitIdx"]["asv"]] = get_metric(p, "asv")
         fit_array[i, gas["fitIdx"]["mr"]] = get_metric(p, "mr")
@@ -265,7 +286,7 @@ def sort_population(
     mode = (mode or "scalar").strip().lower()
 
     if mode == "scalar":
-        return sorted(popation := list(population), key=scalar_key, reverse=True)
+        return sorted(population := list(population), key=scalar_key, reverse=True)
 
     if mode in {"lexicographic", "rank_partitioning", "partitioning", "rank"}:
         return sort_population_rank_partitioning(
