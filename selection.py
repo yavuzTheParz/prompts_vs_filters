@@ -1,10 +1,12 @@
 from __future__ import annotations
+
 import math
 from typing import Iterable, List, Tuple
+
 from Prompt_class import Prompt
 
 
-def _flt(v, d=0.0):
+def _flt(v, d: float = 0.0) -> float:
     try:
         v = float(v)
         return v if math.isfinite(v) else d
@@ -21,45 +23,87 @@ def scalar_key(p: Prompt) -> float:
 
 
 def _bucket(v: float, step: float) -> float:
-    return _flt(v) if step <= 0 else math.floor(_flt(v) / step) * step
+    v = _flt(v)
+    if step <= 0:
+        return v
+    return math.floor(v / step) * step
 
 
-def rank_partition_key(p: Prompt, step_asv: float = 0.05, step_mr: float = 0.05):
-    asv, mr = get_metric(p, "asv"), get_metric(p, "mr")
-    return (_bucket(asv, step_asv), _bucket(mr, step_mr), asv, mr)
+def rank_partition_key(
+    p: Prompt,
+    step_asv: float = 0.05,
+    step_mr: float = 0.05,
+):
+    """
+    ASV-first rank-partitioned lexicographic key.
+
+    Objective order:
+        1. maximize ASV partition
+        2. maximize MR partition
+        3. maximize raw ASV
+        4. maximize raw MR
+
+    This preserves the rank-partitioning logic, but uses only ASV and MR.
+    ASV is prioritized over MR.
+    """
+
+    asv = get_metric(p, "asv")
+    mr = get_metric(p, "mr")
+
+    asv_partition = _bucket(asv, step_asv)
+    mr_partition = _bucket(mr, step_mr)
+
+    return (
+        asv_partition,
+        mr_partition,
+        asv,
+        mr,
+    )
 
 
 def lexicographic_key(p: Prompt):
-    """ASV-first rank-partitioned lexicographic key.
-
-    This keeps compatibility with evolutionary_strategy.py, whose validator already
-    accepts selection_mode='lexicographic'. Priority is ASV partition first, MR
-    partition second, then raw ASV and raw MR as tie-breakers.
-    """
     return rank_partition_key(p)
 
 
 def sort_population_rank_partitioning(
-    population: Iterable[Prompt], step_asv: float = 0.05, step_mr: float = 0.05
+    population: Iterable[Prompt],
+    step_asv: float = 0.05,
+    step_mr: float = 0.05,
 ) -> Tuple[List[Prompt], dict]:
+
     ranked = sorted(
         population,
         key=lambda p: rank_partition_key(p, step_asv, step_mr),
         reverse=True,
     )
-    info = {"step_asv": step_asv, "step_mr": step_mr}
+
+    info = {
+        "step_asv": step_asv,
+        "step_mr": step_mr,
+    }
+
     if ranked:
-        bp = rank_partition_key(ranked[0], step_asv, step_mr)
+        best_key = rank_partition_key(ranked[0], step_asv, step_mr)
+
+        best_asv_partition = best_key[0]
+        best_mr_partition = best_key[1]
+
         info.update(
-            best_asv_partition=bp[0],
-            best_mr_partition=bp[1],
+            best_asv_partition=best_asv_partition,
+            best_mr_partition=best_mr_partition,
             first_asv_partition_size=sum(
-                rank_partition_key(p, step_asv, step_mr)[0] == bp[0] for p in ranked
+                _bucket(get_metric(p, "asv"), step_asv) == best_asv_partition
+                for p in ranked
             ),
             first_lexicographic_partition_size=sum(
-                rank_partition_key(p, step_asv, step_mr)[:2] == bp[:2] for p in ranked
+                (
+                    _bucket(get_metric(p, "asv"), step_asv) == best_asv_partition
+                    and _bucket(get_metric(p, "mr"), step_mr) == best_mr_partition
+                )
+                for p in ranked
             ),
         )
+
     return ranked, info
 
 
@@ -69,11 +113,19 @@ def sort_population(
     step_asv: float = 0.05,
     step_mr: float = 0.05,
 ) -> List[Prompt]:
+
     mode = (mode or "scalar").strip().lower()
+
     if mode == "scalar":
         return sorted(population, key=scalar_key, reverse=True)
-    if mode == "lexicographic":
-        return sort_population_rank_partitioning(population, step_asv, step_mr)[0]
-    if mode in {"rank_partitioning", "partitioning", "rank"}:
-        return sort_population_rank_partitioning(population, step_asv, step_mr)[0]
-    raise ValueError("selection mode must be 'scalar', 'lexicographic', or 'rank_partitioning'")
+
+    if mode in {"lexicographic", "rank_partitioning", "partitioning", "rank"}:
+        return sort_population_rank_partitioning(
+            population,
+            step_asv=step_asv,
+            step_mr=step_mr,
+        )[0]
+
+    raise ValueError(
+        "selection mode must be 'scalar', 'lexicographic', or 'rank_partitioning'"
+    )
