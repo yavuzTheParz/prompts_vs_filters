@@ -12,16 +12,15 @@ where native ML dependencies are unavailable or blocked by OS policy.
 from __future__ import annotations
 
 import ast
+import csv
 import math
 import random
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-import pandas as pd
-
 from Prompt_class import Content, Prompt, Structure
-from run_llm import assign_outputs
+from selection import lexicographic_key, scalar_key, sort_population
 
 
 FitnessEvaluator = Callable[[List[Prompt]], None]
@@ -46,6 +45,11 @@ class ESConfig:
     verbose: bool = True
     random_seed: Optional[int] = None
     lightweight: bool = False  # True for dry-runs without heavy ML imports
+    selection_mode: str = "scalar"  # "scalar" or "lexicographic"
+    filter_update_every: int = 0
+    top_k_filter: int = 5
+    benign_csv_path: Optional[str] = None
+    max_filter_chars: int = 4000
 
 
 @dataclass
@@ -75,17 +79,29 @@ def _to_list(value):
 
 def _pick_first_enum_match(label_list: Sequence[str], enum_class):
     for label in label_list:
-        if label in enum_class.__members__:
-            return enum_class[label]
+        normalized = str(label).strip()
+        if normalized in enum_class.__members__:
+            return enum_class[normalized]
     return None
+
+
+def _unknown_labels(label_list: Sequence[str], enum_class) -> List[str]:
+    return [
+        str(label).strip()
+        for label in label_list
+        if str(label).strip() and str(label).strip() not in enum_class.__members__
+    ]
 
 
 def load_prompt_population(csv_path: str) -> List[Prompt]:
     """Load initial prompt population from the labelled CSV used by the project."""
-    df = pd.read_csv(csv_path)
     prompts: List[Prompt] = []
 
-    for _, row in df.iterrows():
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    for row in rows:
         struct_list = _to_list(row.get("structure_labels", []))
         content_list = _to_list(row.get("labels", []))
 
@@ -97,6 +113,12 @@ def load_prompt_population(csv_path: str) -> List[Prompt]:
                 input_prompt=str(row.get("text", "")),
                 structure=structure,
                 content=content,
+                metadata={
+                    "raw_structure_labels": struct_list,
+                    "raw_content_labels": content_list,
+                    "unknown_structure_labels": _unknown_labels(struct_list, Structure),
+                    "unknown_content_labels": _unknown_labels(content_list, Content),
+                },
             )
         )
 
@@ -105,9 +127,9 @@ def load_prompt_population(csv_path: str) -> List[Prompt]:
 
 def map_structure_to_style(structure: Structure, neutral_policy: str = "random") -> Optional[str]:
     """Map project structure labels to available mutation styles."""
-    if structure == Structure.imperative_instruction:
+    if structure in {Structure.imperative_instruction, Structure.role_reprogramming}:
         return "imperative"
-    if structure == Structure.question_request:
+    if structure in {Structure.question_request, Structure.poem_request}:
         return "plea"
     if neutral_policy == "random":
         return random.choice(["imperative", "plea"])
@@ -125,18 +147,24 @@ def _clone_prompt(prompt: Prompt, *, keep_outputs: bool = False) -> Prompt:
         content=prompt.content,
         fitness=prompt.fitness if keep_outputs else 0.0,
         direct_output=prompt.direct_output,
+        metrics=dict(getattr(prompt, "metrics", {}) or {}) if keep_outputs else {},
+        metadata=dict(getattr(prompt, "metadata", {}) or {}),
     )
     child.output_prompts = list(prompt.output_prompts) if keep_outputs else []
     return child
 
 
-def _is_better(a: Prompt, b: Prompt) -> bool:
+def _is_better(a: Prompt, b: Prompt, config: Optional[ESConfig] = None) -> bool:
     """The current project fitness is maximized."""
-    return a.fitness > b.fitness
+    mode = config.selection_mode if config else "scalar"
+    if mode == "lexicographic":
+        return lexicographic_key(a) > lexicographic_key(b)
+    return scalar_key(a) > scalar_key(b)
 
 
-def _sort_best_first(population: List[Prompt]) -> List[Prompt]:
-    return sorted(population, key=lambda p: p.fitness, reverse=True)
+def _sort_best_first(population: List[Prompt], config: Optional[ESConfig] = None) -> List[Prompt]:
+    mode = config.selection_mode if config else "scalar"
+    return sort_population(population, mode=mode)
 
 
 def _normalize_survival_schema(schema: str) -> str:
@@ -242,7 +270,25 @@ def _lightweight_evaluator(population: List[Prompt]) -> None:
         # Simple score: reward changed/longer prompts and stable deterministic noise.
         length_score = min(len(p.input_prompt) / 300.0, 1.0)
         output_score = 0.1 if p.output_prompts else 0.0
+        repetition_penalty = _repetition_penalty(p.input_prompt)
+        length_penalty = max(0.0, (len(p.input_prompt) - 500) / 500.0)
+        p.metrics = {
+            "asv": float(output_score),
+            "mr": float(length_score),
+            "fluency": 1.0 if len(p.input_prompt.split()) >= 3 else 0.25,
+            "diversity": 0.0,
+            "length_penalty": float(min(length_penalty, 1.0)),
+            "repetition_penalty": float(repetition_penalty),
+        }
         p.fitness = 0.5 * length_score + output_score
+
+
+def _repetition_penalty(text: str) -> float:
+    words = [w.strip(".,!?;:()[]{}\"'").lower() for w in (text or "").split()]
+    words = [w for w in words if w]
+    if not words:
+        return 0.0
+    return max(0.0, 1.0 - (len(set(words)) / len(words)))
 
 
 def _evaluate_population(
@@ -255,23 +301,103 @@ def _evaluate_population(
 ) -> None:
     unevaluated = [p for p in population if not p.output_prompts]
     if unevaluated:
-        assign_outputs(filter_prompt, unevaluated, client, model_name=model_name)
+        if lightweight:
+            for prompt in unevaluated:
+                if not prompt.direct_output:
+                    prompt.direct_output = f"Dry-run direct response for: {prompt.input_prompt}"
+                prompt.output_prompts.append(f"Dry-run filtered response for: {prompt.input_prompt}")
+        else:
+            from run_llm import assign_outputs
+
+            assign_outputs(filter_prompt, unevaluated, client, model_name=model_name)
     if lightweight:
         _lightweight_evaluator(population)
     else:
         evaluator(population)
 
 
-def _survival_plus(parents: List[Prompt], offspring: List[Prompt], mu: int) -> List[Prompt]:
-    return _sort_best_first(parents + offspring)[:mu]
+def _survival_plus(parents: List[Prompt], offspring: List[Prompt], mu: int, config: ESConfig) -> List[Prompt]:
+    return _sort_best_first(parents + offspring, config)[:mu]
 
 
-def _survival_comma(offspring: List[Prompt], mu: int) -> List[Prompt]:
-    return _sort_best_first(offspring)[:mu]
+def _survival_comma(offspring: List[Prompt], mu: int, config: ESConfig) -> List[Prompt]:
+    return _sort_best_first(offspring, config)[:mu]
 
 
-def _best_of(population: List[Prompt]) -> Prompt:
-    return _sort_best_first(population)[0]
+def _best_of(population: List[Prompt], config: ESConfig) -> Prompt:
+    return _sort_best_first(population, config)[0]
+
+
+def _metric(prompt: Prompt, name: str) -> float:
+    return float((getattr(prompt, "metrics", {}) or {}).get(name, 0.0) or 0.0)
+
+
+def _history_metrics(generation: int, best: Prompt, parents: List[Prompt], success_rate: float, sigma: float) -> Dict[str, float]:
+    mean_parent_fitness = sum(p.fitness for p in parents) / len(parents)
+    return {
+        "generation": float(generation),
+        "best_fitness": float(best.fitness),
+        "mean_parent_fitness": float(mean_parent_fitness),
+        "success_rate": float(success_rate),
+        "sigma": float(sigma),
+        "best_asv": _metric(best, "asv"),
+        "best_mr": _metric(best, "mr"),
+        "best_fluency": _metric(best, "fluency"),
+        "best_diversity": _metric(best, "diversity"),
+        "best_length_penalty": _metric(best, "length_penalty"),
+        "best_repetition_penalty": _metric(best, "repetition_penalty"),
+    }
+
+
+def _load_benign_prompts(path: Optional[str]) -> List[str]:
+    default = [
+        "Explain what gravity is.",
+        "Write a short friendly email asking for a meeting time.",
+        "What is the difference between RAM and storage?",
+    ]
+    if not path:
+        return default
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames:
+                text_field = "text" if "text" in reader.fieldnames else reader.fieldnames[0]
+                prompts = [row.get(text_field, "").strip() for row in reader]
+            else:
+                prompts = []
+        return [p for p in prompts if p] or default
+    except FileNotFoundError:
+        return default
+
+
+def _maybe_evolve_filter(
+    generation: int,
+    config: ESConfig,
+    filter_prompt: str,
+    ranked_population: List[Prompt],
+    client,
+    model_name: str,
+) -> Tuple[str, Dict[str, float]]:
+    if config.filter_update_every <= 0 or generation % config.filter_update_every != 0:
+        return filter_prompt, {"filter_changed": 0.0, "filter_length": float(len(filter_prompt))}
+
+    from filter_evolution import evolve_filter
+
+    top_prompts = [p.input_prompt for p in ranked_population[: max(1, config.top_k_filter)]]
+    benign_prompts = _load_benign_prompts(config.benign_csv_path)
+    candidate = evolve_filter(
+        current_filter=filter_prompt,
+        top_attack_prompts=top_prompts,
+        benign_set=benign_prompts,
+        client=client,
+        model_name=model_name,
+    )
+    if len(candidate) > config.max_filter_chars:
+        candidate = filter_prompt
+    return candidate, {
+        "filter_changed": 1.0 if candidate != filter_prompt else 0.0,
+        "filter_length": float(len(candidate)),
+    }
 
 
 def _load_heavy_mutation_objects():
@@ -333,6 +459,9 @@ def evolutionary_strategy_run(
     variant = config.variant.strip().lower()
     if variant not in {"one_fifth", "self_adaptive"}:
         raise ValueError("config.variant must be either 'one_fifth' or 'self_adaptive'")
+    config.selection_mode = (config.selection_mode or "scalar").strip().lower()
+    if config.selection_mode not in {"scalar", "lexicographic"}:
+        raise ValueError("config.selection_mode must be either 'scalar' or 'lexicographic'")
 
     if config.lightweight:
         template_manager = style_manager = tokenizer = bert_model = None
@@ -353,7 +482,7 @@ def evolutionary_strategy_run(
 
     start = time.time()
     _evaluate_population(parents, filter_prompt, client, model_name, evaluator, config.lightweight)
-    parents = _sort_best_first(parents)
+    parents = _sort_best_first(parents, config)
     best = _clone_prompt(parents[0], keep_outputs=True)
 
     parent_sigmas = [float(config.sigma)] * config.mu
@@ -408,7 +537,7 @@ def evolutionary_strategy_run(
 
         successes = sum(
             1 for child, p_idx in zip(offspring, offspring_parent_indices)
-            if _is_better(child, parents[p_idx])
+            if _is_better(child, parents[p_idx], config)
         )
         success_rate = successes / max(1, len(offspring))
 
@@ -420,43 +549,47 @@ def evolutionary_strategy_run(
             sigma_global = max(config.sigma_min, min(config.sigma_max, sigma_global))
 
             if survival_mode == "plus":
-                parents = _survival_plus(parents, offspring, config.mu)
+                parents = _survival_plus(parents, offspring, config.mu, config)
             else:
-                parents = _survival_comma(offspring, config.mu)
+                parents = _survival_comma(offspring, config.mu, config)
 
         else:
             if survival_mode == "plus":
                 combined = list(zip(parents + offspring, parent_sigmas + offspring_sigmas))
-                combined.sort(key=lambda item: item[0].fitness, reverse=True)
-                selected = combined[: config.mu]
+                sigma_by_id = {id(prompt): sigma for prompt, sigma in combined}
+                selected_prompts = _sort_best_first([prompt for prompt, _ in combined], config)[: config.mu]
+                selected = [(prompt, sigma_by_id[id(prompt)]) for prompt in selected_prompts]
             else:
                 combined = list(zip(offspring, offspring_sigmas))
-                combined.sort(key=lambda item: item[0].fitness, reverse=True)
-                selected = combined[: config.mu]
+                sigma_by_id = {id(prompt): sigma for prompt, sigma in combined}
+                selected_prompts = _sort_best_first([prompt for prompt, _ in combined], config)[: config.mu]
+                selected = [(prompt, sigma_by_id[id(prompt)]) for prompt in selected_prompts]
 
             parents = [item[0] for item in selected]
             parent_sigmas = [item[1] for item in selected]
 
-        current_best = _best_of(parents + offspring)
-        if _is_better(current_best, best):
+        ranked_population = _sort_best_first(parents + offspring, config)
+        current_best = ranked_population[0]
+        if _is_better(current_best, best, config):
             best = _clone_prompt(current_best, keep_outputs=True)
 
-        mean_parent_fitness = sum(p.fitness for p in parents) / len(parents)
         sigma_report = sigma_global if variant == "one_fifth" else sum(parent_sigmas) / len(parent_sigmas)
-        history.append(
-            {
-                "generation": float(generation),
-                "best_fitness": float(best.fitness),
-                "mean_parent_fitness": float(mean_parent_fitness),
-                "success_rate": float(success_rate),
-                "sigma": float(sigma_report),
-            }
+        filter_prompt, filter_metrics = _maybe_evolve_filter(
+            generation,
+            config,
+            filter_prompt,
+            ranked_population,
+            client,
+            model_name,
         )
+        history_row = _history_metrics(generation, best, parents, success_rate, sigma_report)
+        history_row.update(filter_metrics)
+        history.append(history_row)
 
         if config.verbose:
             print(
                 f"[ES:{variant}] gen={generation} best={best.fitness:.4f} "
-                f"mean={mean_parent_fitness:.4f} ps={success_rate:.3f} sigma={sigma_report:.3f}"
+                f"mean={history_row['mean_parent_fitness']:.4f} ps={success_rate:.3f} sigma={sigma_report:.3f}"
             )
 
         if config.target_fitness is not None and best.fitness >= config.target_fitness:

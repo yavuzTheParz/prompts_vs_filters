@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Optional
 
 from evolutionary_strategy import ESConfig, evolutionary_strategy_run
-from llm_client import LocalLLMClient
 
 
 DEFAULT_FILTER_PROMPT = (
@@ -16,7 +15,7 @@ DEFAULT_FILTER_PROMPT = (
 )
 
 
-def build_client(args) -> Optional[LocalLLMClient]:
+def build_client(args) -> Optional[object]:
     if args.dry_run:
         return None
 
@@ -31,6 +30,8 @@ def build_client(args) -> Optional[LocalLLMClient]:
         args.dry_run = True
         return None
 
+    from llm_client import LocalLLMClient
+
     return LocalLLMClient(
         base_url=base_url,
         api_key=api_key,
@@ -43,10 +44,28 @@ def write_history_csv(path: str, history):
         return
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "generation",
+        "best_fitness",
+        "mean_parent_fitness",
+        "success_rate",
+        "sigma",
+        "best_asv",
+        "best_mr",
+        "best_fluency",
+        "best_diversity",
+        "best_length_penalty",
+        "best_repetition_penalty",
+        "filter_changed",
+        "filter_length",
+    ]
+    extra_fields = sorted({key for row in history for key in row if key not in fieldnames})
+    fieldnames.extend(extra_fields)
     with output_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["generation", "best_fitness", "mean_parent_fitness", "success_rate", "sigma"],
+            fieldnames=fieldnames,
+            extrasaction="ignore",
         )
         writer.writeheader()
         for row in history:
@@ -64,12 +83,17 @@ def parse_args():
     parser.add_argument("--sigma-max", type=float, default=6.0)
     parser.add_argument("--survival", default="(mu+lambda)", help="(mu+lambda) or (mu,lambda)")
     parser.add_argument("--csv", default="prompts/initial_population.csv")
-    parser.add_argument("--model", default="local-qwen")
-    parser.add_argument("--base-url", default=None, help="Local LLM server URL, e.g. http://127.0.0.1:8000")
+    parser.add_argument("--model", default="dphn/Dolphin3.0-Llama3.1-8B")
+    parser.add_argument("--base-url", default=None, help="Local LLM server URL, e.g. http://100.91.151.105:8000")
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--dry-run", action="store_true", help="Run without an LLM server or heavy ML dependencies")
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--selection", choices=["scalar", "lexicographic"], default="scalar")
+    parser.add_argument("--filter-update-every", type=int, default=0)
+    parser.add_argument("--top-k-filter", type=int, default=5)
+    parser.add_argument("--benign-csv", default=None)
+    parser.add_argument("--max-filter-chars", type=int, default=4000)
     parser.add_argument("--history-csv", default="outputs/es_history.csv")
     parser.add_argument("--quiet", action="store_true")
     return parser.parse_args()
@@ -92,6 +116,11 @@ def main():
         verbose=not args.quiet,
         random_seed=args.seed,
         lightweight=args.dry_run,
+        selection_mode=args.selection,
+        filter_update_every=args.filter_update_every,
+        top_k_filter=args.top_k_filter,
+        benign_csv_path=args.benign_csv,
+        max_filter_chars=args.max_filter_chars,
     )
 
     result = evolutionary_strategy_run(

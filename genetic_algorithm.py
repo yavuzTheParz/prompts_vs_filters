@@ -50,9 +50,18 @@ def _to_list(value):
 
 def pick_first_enum_match(label_list, enum_class):
     for label in label_list:
-        if label in enum_class.__members__:
-            return enum_class[label]
+        normalized = str(label).strip()
+        if normalized in enum_class.__members__:
+            return enum_class[normalized]
     return None
+
+
+def unknown_labels(label_list, enum_class):
+    return [
+        str(label).strip()
+        for label in label_list
+        if str(label).strip() and str(label).strip() not in enum_class.__members__
+    ]
 
 
 def map_structure_to_style(structure_enum: Structure) -> str:
@@ -83,6 +92,13 @@ def initialize(csv_path: str = CSV_PATH) -> List[Prompt]:
                 input_prompt=str(row.get("text", "")),
                 structure=s_enum,
                 content=c_enum,
+                metadata={
+                    "raw_structure_labels": struct_list,
+                    "raw_content_labels": content_list,
+                    "unknown_structure_labels": unknown_labels(struct_list, Structure),
+                    "unknown_content_labels": unknown_labels(content_list, Content),
+                    "legacy_runner": True,
+                },
             )
         )
 
@@ -95,6 +111,7 @@ def _clone_prompt(parent: Prompt) -> Prompt:
         structure=parent.structure,
         content=parent.content,
         direct_output=parent.direct_output,
+        metadata=dict(getattr(parent, "metadata", {}) or {}),
     )
 
 

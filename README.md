@@ -11,8 +11,10 @@ This repository implements a prompt-population evolution framework for studying 
 - `mutation_manager.py`: structural and style-aware prompt mutation operators.
 - `run_llm.py`: LLM output assignment for filtered and direct prompt responses.
 - `fitfunc.py`: SBERT-based ASV/MR fitness evaluation, with optional BERTScore support.
+- `selection.py`: scalar and lexicographical population ordering.
 - `filter_evolution.py`: optional filter-prompt update loop.
 - `genetic_algorithm.py`: legacy GA-style runner kept for comparison.
+- `experiments/run_ablation.py`: lightweight ablation runner for ES variants and selection modes.
 - `prompts/initial_population.csv`: initial labelled prompt population.
 
 ## Installation
@@ -99,6 +101,31 @@ export LOCAL_LLM_API_KEY="YOUR_SECRET_KEY"  # optional
 python run_es.py --variant self_adaptive --mu 5 --lambda 20 --generations 10
 ```
 
+Use `.env.example` as the template for local secrets. Do not commit real API keys.
+
+## Lexicographical selection
+
+Scalar selection remains the default for backward compatibility. Lexicographical selection ranks candidates by ASV first, then uses MR only as the tie-breaker:
+
+```bash
+python run_es.py --dry-run --selection lexicographic --variant one_fifth --mu 3 --lambda 10 --generations 2
+```
+
+## Optional filter coevolution
+
+Filter updates are disabled by default. To try a candidate filter rule every generation using the current top prompts:
+
+```bash
+python run_es.py \
+  --base-url http://127.0.0.1:8000 \
+  --selection lexicographic \
+  --filter-update-every 1 \
+  --top-k-filter 5 \
+  --benign-csv prompts/benign.csv
+```
+
+If `--benign-csv` is omitted, a small built-in benign sanity set is used. For real experiments, provide a representative benign set so the filter cannot improve by refusing everything.
+
 ## Output
 
 `run_es.py` prints the final best prompt and writes convergence/history data to:
@@ -114,6 +141,24 @@ The CSV contains:
 - mean_parent_fitness
 - success_rate
 - sigma
+- best_asv
+- best_mr
+- best_fluency
+- best_diversity
+- best_length_penalty
+- best_repetition_penalty
+- filter_changed
+- filter_length
+
+## Ablation runner
+
+The lightweight ablation runner compares ES variants and selection modes across seeds:
+
+```bash
+python experiments/run_ablation.py --generations 2 --seeds 1,2,3
+```
+
+Add `--with-filter-coevolution` to include the filter-update condition in dry-run bookkeeping.
 
 ## Notes on sigma
 
@@ -128,3 +173,7 @@ python genetic_algorithm.py
 ```
 
 For the proposal and main experiments, prefer `run_es.py` and `evolutionary_strategy.py`.
+
+## Safety scope
+
+This repository is for controlled defensive evaluation, filter robustness measurement, and benchmark construction. Do not use generated prompts or outputs to obtain or distribute harmful instructions.
