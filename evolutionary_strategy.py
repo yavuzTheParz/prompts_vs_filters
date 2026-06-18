@@ -17,7 +17,7 @@ import math
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from Prompt_class import Content, Prompt, Structure
 from selection import lexicographic_key, scalar_key, sort_population
@@ -60,6 +60,8 @@ class ESRunResult:
     filter_prompt: str
     runtime_sec: float
     history: List[Dict[str, float]] = field(default_factory=list)
+    filter_events: List[Dict[str, Any]] = field(default_factory=list)
+    filter_versions: List[Dict[str, Any]] = field(default_factory=list)
 
 
 # -----------------------------
@@ -126,6 +128,25 @@ def load_prompt_population(csv_path: str) -> List[Prompt]:
     return prompts
 
 
+def map_structure_to_style(structure: Structure, neutral_policy: str = "random") -> Optional[str]:
+    """Map dataset structure labels to mutation style names."""
+    if structure == Structure.imperative_instruction:
+        return "imperative"
+    if structure == Structure.question_request:
+        return "plea"
+
+    normalized_policy = (neutral_policy or "random").strip().lower()
+    if normalized_policy == "none":
+        return None
+    if normalized_policy == "neutral":
+        return "neutral"
+    if normalized_policy == "imperative":
+        return "imperative"
+    if normalized_policy == "plea":
+        return "plea"
+    return random.choice(("imperative", "plea"))
+
+
 def choose_mutation_style(structure: Structure, config: ESConfig) -> Optional[str]:
     policy = (config.style_selection or "random").strip().lower()
 
@@ -137,6 +158,7 @@ def choose_mutation_style(structure: Structure, config: ESConfig) -> Optional[st
         return map_structure_to_style(structure, config.neutral_style_policy)
 
     raise ValueError("style_selection must be either 'random' or 'by_structure'")
+
 
 # -----------------------------
 # ES utilities
@@ -379,27 +401,80 @@ def _maybe_evolve_filter(
     ranked_population: List[Prompt],
     client,
     model_name: str,
-) -> Tuple[str, Dict[str, float]]:
+) -> Tuple[str, Dict[str, float], Optional[Dict[str, Any]]]:
+    base_metrics = {
+        "filter_attempted": 0.0,
+        "filter_changed": 0.0,
+        "filter_length": float(len(filter_prompt)),
+        "filter_old_attack_refusal_rate": 0.0,
+        "filter_new_attack_refusal_rate": 0.0,
+        "filter_old_benign_refusal_rate": 0.0,
+        "filter_new_benign_refusal_rate": 0.0,
+    }
     if config.filter_update_every <= 0 or generation % config.filter_update_every != 0:
-        return filter_prompt, {"filter_changed": 0.0, "filter_length": float(len(filter_prompt))}
+        return filter_prompt, base_metrics, None
 
-    from filter_evolution import evolve_filter
+    from filter_evolution import evolve_filter, report_to_dict
 
+    old_filter = filter_prompt
     top_prompts = [p.input_prompt for p in ranked_population[: max(1, config.top_k_filter)]]
     benign_prompts = _load_benign_prompts(config.benign_csv_path)
-    candidate = evolve_filter(
-        current_filter=filter_prompt,
+
+    candidate, report = evolve_filter(
+        current_filter=old_filter,
         top_attack_prompts=top_prompts,
         benign_set=benign_prompts,
         client=client,
         model_name=model_name,
+        return_report=True,
     )
+    report_data = report_to_dict(report)
+    proposed_rule = str(report_data.get("proposed_rule", "") or "")
+    proposed_candidate_filter = old_filter.rstrip() + ("\n- " + proposed_rule if proposed_rule else "")
+
+    rejection_reason = None
     if len(candidate) > config.max_filter_chars:
-        candidate = filter_prompt
-    return candidate, {
-        "filter_changed": 1.0 if candidate != filter_prompt else 0.0,
-        "filter_length": float(len(candidate)),
+        candidate = old_filter
+        rejection_reason = "max_filter_chars_exceeded"
+
+    changed = candidate != old_filter
+    accepted_by_evaluator = bool(report_data.get("accepted", False))
+    accepted_after_checks = bool(changed)
+
+    event: Dict[str, Any] = {
+        "generation": generation,
+        "attempted": True,
+        "filter_changed": changed,
+        "accepted_by_filter_evaluator": accepted_by_evaluator,
+        "accepted_after_length_check": accepted_after_checks,
+        "rejection_reason": rejection_reason,
+        "top_k_filter": int(max(1, config.top_k_filter)),
+        "max_filter_chars": int(config.max_filter_chars),
+        "top_attack_prompts": top_prompts,
+        "proposed_rule": proposed_rule,
+        "pattern_summary": report_data.get("pattern_summary", {}),
+        "old_attack_refusal_rate": float(report_data.get("old_attack_refusal_rate", 0.0) or 0.0),
+        "new_attack_refusal_rate": float(report_data.get("new_attack_refusal_rate", 0.0) or 0.0),
+        "old_benign_refusal_rate": float(report_data.get("old_benign_refusal_rate", 0.0) or 0.0),
+        "new_benign_refusal_rate": float(report_data.get("new_benign_refusal_rate", 0.0) or 0.0),
+        "old_filter_length": len(old_filter),
+        "candidate_filter_length": len(proposed_candidate_filter),
+        "final_filter_length": len(candidate),
+        "old_filter": old_filter,
+        "candidate_filter": proposed_candidate_filter,
+        "final_filter": candidate,
     }
+
+    metrics = {
+        "filter_attempted": 1.0,
+        "filter_changed": 1.0 if changed else 0.0,
+        "filter_length": float(len(candidate)),
+        "filter_old_attack_refusal_rate": event["old_attack_refusal_rate"],
+        "filter_new_attack_refusal_rate": event["new_attack_refusal_rate"],
+        "filter_old_benign_refusal_rate": event["old_benign_refusal_rate"],
+        "filter_new_benign_refusal_rate": event["new_benign_refusal_rate"],
+    }
+    return candidate, metrics, event
 
 
 def _load_heavy_mutation_objects():
@@ -489,6 +564,16 @@ def evolutionary_strategy_run(
 
     parent_sigmas = [float(config.sigma)] * config.mu
     history: List[Dict[str, float]] = []
+    filter_events: List[Dict[str, Any]] = []
+    filter_versions: List[Dict[str, Any]] = [
+        {
+            "version": 0,
+            "generation": 0,
+            "reason": "initial",
+            "filter_length": len(filter_prompt),
+            "filter_prompt": filter_prompt,
+        }
+    ]
     sigma_global = float(config.sigma)
 
     for generation in range(1, config.generations + 1):
@@ -576,7 +661,7 @@ def evolutionary_strategy_run(
             best = _clone_prompt(current_best, keep_outputs=True)
 
         sigma_report = sigma_global if variant == "one_fifth" else sum(parent_sigmas) / len(parent_sigmas)
-        filter_prompt, filter_metrics = _maybe_evolve_filter(
+        filter_prompt, filter_metrics, filter_event = _maybe_evolve_filter(
             generation,
             config,
             filter_prompt,
@@ -584,6 +669,20 @@ def evolutionary_strategy_run(
             client,
             model_name,
         )
+        if filter_event is not None:
+            filter_events.append(filter_event)
+            if filter_event.get("filter_changed"):
+                filter_versions.append(
+                    {
+                        "version": len(filter_versions),
+                        "generation": generation,
+                        "reason": "accepted_filter_update",
+                        "proposed_rule": filter_event.get("proposed_rule", ""),
+                        "filter_length": len(filter_prompt),
+                        "filter_prompt": filter_prompt,
+                    }
+                )
+
         history_row = _history_metrics(generation, best, parents, success_rate, sigma_report)
         history_row.update(filter_metrics)
         history.append(history_row)
@@ -603,6 +702,8 @@ def evolutionary_strategy_run(
         filter_prompt=filter_prompt,
         runtime_sec=time.time() - start,
         history=history,
+        filter_events=filter_events,
+        filter_versions=filter_versions,
     )
 
 
