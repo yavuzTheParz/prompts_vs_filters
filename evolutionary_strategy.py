@@ -28,28 +28,29 @@ FitnessEvaluator = Callable[[List[Prompt]], None]
 
 @dataclass
 class ESConfig:
-    """Configuration for prompt-level Evolution Strategy."""
-
     lambda_: int = 20
     mu: int = 5
     generations: int = 20
     sigma: float = 1.0
-    variant: str = "one_fifth"  # "one_fifth" or "self_adaptive"
-    survival_schema: str = "(mu+lambda)"  # "(mu+lambda)" / "(µ+λ)" or "(mu,lambda)" / "(µ,λ)"
+    variant: str = "one_fifth"
+    survival_schema: str = "(mu+lambda)"
     one_fifth_c: float = 0.85
     sigma_min: float = 0.25
     sigma_max: float = 6.0
     target_fitness: Optional[float] = None
     csv_path: str = "prompts/initial_population.csv"
-    neutral_style_policy: str = "random"  # "random" or "skip"
+    neutral_style_policy: str = "random"
     verbose: bool = True
     random_seed: Optional[int] = None
-    lightweight: bool = False  # True for dry-runs without heavy ML imports
-    selection_mode: str = "scalar"  # "scalar" or "lexicographic"
+    lightweight: bool = False
+    selection_mode: str = "scalar"
     filter_update_every: int = 0
     top_k_filter: int = 5
     benign_csv_path: Optional[str] = None
     max_filter_chars: int = 4000
+
+    style_selection: str = "random"  # "random" or "by_structure"
+    mutation_styles: Tuple[str, ...] = ("imperative", "plea")
 
 
 @dataclass
@@ -125,16 +126,17 @@ def load_prompt_population(csv_path: str) -> List[Prompt]:
     return prompts
 
 
-def map_structure_to_style(structure: Structure, neutral_policy: str = "random") -> Optional[str]:
-    """Map project structure labels to available mutation styles."""
-    if structure in {Structure.imperative_instruction, Structure.role_reprogramming}:
-        return "imperative"
-    if structure in {Structure.question_request, Structure.poem_request}:
-        return "plea"
-    if neutral_policy == "random":
-        return random.choice(["imperative", "plea"])
-    return None
+def choose_mutation_style(structure: Structure, config: ESConfig) -> Optional[str]:
+    policy = (config.style_selection or "random").strip().lower()
 
+    if policy == "random":
+        styles = tuple(config.mutation_styles or ("imperative", "plea"))
+        return random.choice(styles)
+
+    if policy == "by_structure":
+        return map_structure_to_style(structure, config.neutral_style_policy)
+
+    raise ValueError("style_selection must be either 'random' or 'by_structure'")
 
 # -----------------------------
 # ES utilities
@@ -224,7 +226,7 @@ def _mutate_prompt(
 
     reps = _mutation_repetitions(sigma, config.sigma_min, config.sigma_max)
     for _ in range(reps):
-        style = map_structure_to_style(child.structure, config.neutral_style_policy)
+        style = choose_mutation_style(child.structure, config)
         if style is None:
             logs.append("NO_STYLE")
             continue
