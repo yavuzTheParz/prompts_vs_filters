@@ -46,7 +46,16 @@ def write_history_csv(path: str, history):
     with output_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["generation", "best_fitness", "mean_parent_fitness", "success_rate", "sigma"],
+            fieldnames=[
+                "generation",
+                "best_fitness",
+                "mean_parent_fitness",
+                "success_rate",
+                "sigma",
+                "best_asv",
+                "best_mr",
+            ],
+            extrasaction="ignore",
         )
         writer.writeheader()
         for row in history:
@@ -71,6 +80,7 @@ def parse_args():
     parser.add_argument("--dry-run", action="store_true", help="Run without an LLM server or heavy ML dependencies")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--history-csv", default="outputs/es_history.csv")
+    parser.add_argument("--selection-mode", choices=["scalar", "lexicographic"], default="scalar")
     parser.add_argument("--quiet", action="store_true")
     return parser.parse_args()
 
@@ -92,6 +102,7 @@ def main():
         verbose=not args.quiet,
         random_seed=args.seed,
         lightweight=args.dry_run,
+        selection_mode=args.selection_mode,
     )
 
     result = evolutionary_strategy_run(
