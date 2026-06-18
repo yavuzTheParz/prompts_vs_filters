@@ -85,6 +85,28 @@ def _write_jsonl(path: Path, rows) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def _final_population_output_rows(result):
+    rows = []
+    for prompt_index, prompt in enumerate(getattr(result, "population", []) or []):
+        metrics = dict(getattr(prompt, "metrics", {}) or {})
+        for output_index, output_text in enumerate(getattr(prompt, "output_prompts", []) or []):
+            rows.append(
+                {
+                    "phase": "final_population",
+                    "prompt_index": prompt_index,
+                    "input_prompt": getattr(prompt, "input_prompt", ""),
+                    "structure": getattr(getattr(prompt, "structure", None), "name", str(getattr(prompt, "structure", ""))),
+                    "content": getattr(getattr(prompt, "content", None), "name", str(getattr(prompt, "content", ""))),
+                    "direct_output": getattr(prompt, "direct_output", "") or "",
+                    "output_index": output_index,
+                    "output_text": output_text or "",
+                    "fitness": float(getattr(prompt, "fitness", 0.0) or 0.0),
+                    "metrics": metrics,
+                }
+            )
+    return rows
+
+
 def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     if not run_dir:
         return
@@ -113,6 +135,9 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     # versions are only accepted updates.
     _write_jsonl(root / "filter_versions.jsonl", getattr(result, "filter_versions", []))
 
+    # Raw sampled model outputs for the final selected population.
+    _write_jsonl(root / "outputs.jsonl", _final_population_output_rows(result))
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run prompt Evolution Strategy.")
@@ -137,6 +162,7 @@ def parse_args():
     parser.add_argument("--top-k-filter", type=int, default=5, help="Number of top prompts used to update the filter")
     parser.add_argument("--benign-csv", default=None, help="CSV of benign prompts used to check false-positive refusal")
     parser.add_argument("--max-filter-chars", type=int, default=4000, help="Reject candidate filters longer than this limit")
+    parser.add_argument("--k-evals", type=int, default=1, help="Number of stochastic filtered responses sampled per prompt")
     parser.add_argument("--run-dir", default=None, help="Optional directory for config, history, and filter artifacts")
     parser.add_argument("--quiet", action="store_true")
     return parser.parse_args()
@@ -144,6 +170,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    os.environ["PROMPTS_VS_FILTERS_K_EVALS"] = str(max(1, int(args.k_evals or 1)))
     client = build_client(args)
 
     config = ESConfig(
@@ -183,6 +210,7 @@ def main():
     print(f"Final filter length: {len(result.filter_prompt)} chars")
     print(f"Filter update attempts: {len(getattr(result, 'filter_events', []))}")
     print(f"Accepted filter versions: {max(0, len(getattr(result, 'filter_versions', [])) - 1)}")
+    print(f"K evaluations per prompt: {max(1, int(args.k_evals or 1))}")
     if args.history_csv:
         print(f"History written to: {args.history_csv}")
     if args.run_dir:
