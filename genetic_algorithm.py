@@ -21,6 +21,7 @@ from fitfunc import callFitness
 from llm_client import LocalLLMClient
 from mutation_manager import StyleManager, TemplateManager, hybrid_mutate_optimized
 from run_llm import assign_outputs
+from selection import sort_population_rank_partitioning
 
 CSV_PATH = "prompts/initial_population.csv"
 DEFAULT_FILTER_PROMPT = (
@@ -123,6 +124,8 @@ def genetic_algorithm_run(
     csv_path: str = CSV_PATH,
     filter_prompt: str = DEFAULT_FILTER_PROMPT,
     evolve_filter_every: Optional[int] = None,
+    selection_step_asv: float = 0.05,
+    selection_step_mr: float = 0.05,
 ):
     print(f"GA starting (population={N}, generations={T})")
 
@@ -149,10 +152,19 @@ def genetic_algorithm_run(
 
         print(">> Calculating fitness...")
         callFitness(population)
-        population.sort(key=lambda x: x.fitness, reverse=True)
+        population, rank_info = sort_population_rank_partitioning(
+            population,
+            step_asv=selection_step_asv,
+            step_mr=selection_step_mr,
+        )
 
         best_p = population[0]
+        metrics = getattr(best_p, "metrics", {}) or {}
+        print(f"** Best ASV: {float(metrics.get('asv', 0.0)):.4f}")
+        print(f"** Best MR : {float(metrics.get('mr', 0.0)):.4f}")
         print(f"** Best Fitness: {best_p.fitness:.4f}")
+        print(f"** Best ASV Partition: {rank_info.get('best_asv_partition', 0.0):.2f}")
+        print(f"** Best MR Partition : {rank_info.get('best_mr_partition', 0.0):.2f}")
         print(f"** Best Prompt: {best_p.input_prompt}")
 
         if evolve_filter_every and client is not None and generation > 0 and generation % evolve_filter_every == 0:
@@ -194,7 +206,11 @@ def genetic_algorithm_run(
     if unevaluated:
         assign_outputs(filter_prompt, unevaluated, client, model_name=model_name)
     callFitness(population)
-    population.sort(key=lambda x: x.fitness, reverse=True)
+    population, _ = sort_population_rank_partitioning(
+        population,
+        step_asv=selection_step_asv,
+        step_mr=selection_step_mr,
+    )
     return population
 
 
