@@ -20,10 +20,6 @@ def scalar_key(p: Prompt) -> float:
     return _flt(getattr(p, "fitness", 0.0))
 
 
-def lexicographic_key(p: Prompt):
-    return (get_metric(p, "asv"), get_metric(p, "mr"))
-
-
 def _bucket(v: float, step: float) -> float:
     return _flt(v) if step <= 0 else math.floor(_flt(v) / step) * step
 
@@ -31,6 +27,16 @@ def _bucket(v: float, step: float) -> float:
 def rank_partition_key(p: Prompt, step_asv: float = 0.05, step_mr: float = 0.05):
     asv, mr = get_metric(p, "asv"), get_metric(p, "mr")
     return (_bucket(asv, step_asv), _bucket(mr, step_mr), asv, mr)
+
+
+def lexicographic_key(p: Prompt):
+    """ASV-first rank-partitioned lexicographic key.
+
+    This keeps compatibility with evolutionary_strategy.py, whose validator already
+    accepts selection_mode='lexicographic'. Priority is ASV partition first, MR
+    partition second, then raw ASV and raw MR as tie-breakers.
+    """
+    return rank_partition_key(p)
 
 
 def sort_population_rank_partitioning(
@@ -67,7 +73,7 @@ def sort_population(
     if mode == "scalar":
         return sorted(population, key=scalar_key, reverse=True)
     if mode == "lexicographic":
-        return sorted(population, key=lexicographic_key, reverse=True)
+        return sort_population_rank_partitioning(population, step_asv, step_mr)[0]
     if mode in {"rank_partitioning", "partitioning", "rank"}:
         return sort_population_rank_partitioning(population, step_asv, step_mr)[0]
     raise ValueError("selection mode must be 'scalar', 'lexicographic', or 'rank_partitioning'")
