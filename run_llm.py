@@ -3,8 +3,6 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 
-from llm_client import LocalLLMClient
-
 
 def _clean_assistant_text(text: str) -> str:
     text = (text or "").strip()
@@ -30,7 +28,7 @@ def _generate(client, prompt: str, model_name: str, temperature: float = 0.7) ->
     if client is None:
         return "Test Mode: No API Client provided."
 
-    if isinstance(client, LocalLLMClient) or hasattr(client, "generate"):
+    if hasattr(client, "generate"):
         resp = client.generate(
             prompt=prompt,
             max_new_tokens=256,
@@ -40,7 +38,7 @@ def _generate(client, prompt: str, model_name: str, temperature: float = 0.7) ->
         )
         return _extract_response_text(resp)
 
-    # OpenAI/Groq-style fallback.
+    # OpenAI/Groq-style fallback
     response = client.chat.completions.create(
         model=model_name,
         messages=[{"role": "user", "content": prompt}],
@@ -50,10 +48,18 @@ def _generate(client, prompt: str, model_name: str, temperature: float = 0.7) ->
 
 
 def _resolve_k_evals(k_evals: Optional[int]) -> int:
-    if k_evals is None:
-        raw = os.getenv("PROMPTS_VS_FILTERS_K_EVALS", "1")
-    else:
-        raw = k_evals
+    """
+    Resolve the number of stochastic evaluations per prompt.
+
+    Priority: explicit argument > environment variable > default of 1.
+    The proposal requires K-times evaluation to average out LLM stochasticity.
+    """
+    if k_evals is not None:
+        try:
+            return max(1, int(k_evals))
+        except (TypeError, ValueError):
+            pass
+    raw = os.getenv("PROMPTS_VS_FILTERS_K_EVALS", "1")
     try:
         return max(1, int(raw))
     except (TypeError, ValueError):
@@ -69,29 +75,40 @@ def assign_outputs(
     k_evals: Optional[int] = None,
 ) -> None:
     """
-    Populate Prompt.output_prompts using the current filter prompt.
+    Populate Prompt.output_prompts and Prompt.direct_output.
 
-    The fitness function averages over Prompt.output_prompts, so k_evals controls
-    how many stochastic filtered responses are collected per prompt. Direct output
-    is generated once per prompt without the defensive filter context and reused as
-    the MR baseline.
+    K-times evaluation (k_evals > 1) collects multiple stochastic attacked responses per
+    prompt. The fitness function averages ASV and MR over all K outputs, which is the
+    correct proposal-aligned evaluation approach.
+
+    - direct_output: generated once without the defensive filter (MR baseline)
+    - output_prompts: generated K times with the defensive filter (ASV/MR evaluation)
+
+    If a prompt already has k_evals outputs, it is skipped. This allows resuming partial
+    evaluation runs without redundant API calls.
     """
-    k_evals = _resolve_k_evals(k_evals)
+    k = _resolve_k_evals(k_evals)
 
     for prompt_obj in prompts:
         try:
+            # Direct output: one sample without the filter, used as the MR reference baseline
             if generate_direct and not getattr(prompt_obj, "direct_output", ""):
                 direct_prompt = f"User:\n{prompt_obj.input_prompt}\n\nAssistant:"
                 prompt_obj.direct_output = _generate(
                     client, direct_prompt, model_name=model_name, temperature=0.7
                 )
 
+            # Attacked output: K samples through the defensive filter
             combined_prompt = (
                 f"System:\n{filter_prompt}\n\n"
                 f"User:\n{prompt_obj.input_prompt}\n\n"
                 f"Assistant:"
             )
-            while len(getattr(prompt_obj, "output_prompts", []) or []) < k_evals:
+
+            current_outputs = getattr(prompt_obj, "output_prompts", None) or []
+            prompt_obj.output_prompts = list(current_outputs)
+
+            while len(prompt_obj.output_prompts) < k:
                 assistant_message = _generate(
                     client, combined_prompt, model_name=model_name, temperature=0.7
                 )
@@ -103,5 +120,6 @@ def assign_outputs(
                 prompt_obj.direct_output = "Error: Could not fetch direct response."
             if not getattr(prompt_obj, "output_prompts", None):
                 prompt_obj.output_prompts = []
-            while len(prompt_obj.output_prompts) < k_evals:
+            # Fill remaining slots with error placeholders so k_evals count is met
+            while len(prompt_obj.output_prompts) < k:
                 prompt_obj.output_prompts.append("Error: Could not fetch response.")

@@ -34,7 +34,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rows = []
-    for variant in ("one_fifth", "self_adaptive"):
+    for variant in ("cma_es", "one_fifth", "self_adaptive"):
         for selection in ("scalar", "lexicographic"):
             for mr_objective in ("minimize", "maximize"):
                 for coevolved in ([False, True] if args.with_filter_coevolution else [False]):

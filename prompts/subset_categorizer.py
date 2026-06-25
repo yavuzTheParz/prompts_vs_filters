@@ -1,39 +1,35 @@
 import pandas as pd
 import ast
-from collections import Counter
 
-# === DOSYA ADLARI ===
+# === FILE NAMES ===
 INPUT_CSV = "filtered-prompts-with-label-1_labeled.csv"
 OUTPUT_STRUCT = "subset_structure.csv"
 OUTPUT_CONTENT = "subset_content.csv"
 OUTPUT_COMBINED = "initial_population.csv"
-OUTPUT_STATS = "label_stats.txt"   # YENİ: label sayıları buraya yazılacak
 
-# === KOLON ADLARI ===
+# === COLUMN NAMES ===
 TEXT_COL = "text"
 LABEL_COL = "labels"
 STRUCT_COL = "structure_labels"
 
-# === STRUCTURE LABEL SETİ (OR MANTIĞI) ===
-STRUCT_SET = {
-    "ignore_all_override",
-    "question_request",
-    "imperative_instruction",
-}
+# === SELECTED STRUCTURE LABELS ===
+STRUCT_BASE = "ignore_all_override"
+OTHER_STRUCTS = [
+    "role_reprogramming",
+    "poem_request",
+]
 
-# === CONTENT LABEL SETİ (OR MANTIĞI) ===
-CONTENT_SET = {
-    "bomb_weapons",
+# === SELECTED CONTENT LABELS ===
+BEHAV_BASE = "bomb_weapons"
+OTHER_BEHAVS = [
     "hacking_cybercrime",
-    "violence",
-}
+    "misinformation",
+    "hate_abuse",
+]
 
 
 def to_list(val):
-    """
-    '["a", "b"]' gibi stringleri listeye çevirir.
-    Zaten listeyse aynen döner.
-    """
+    """Convert string representation of a list into a real list."""
     if isinstance(val, list):
         return val
     if isinstance(val, str):
@@ -44,87 +40,47 @@ def to_list(val):
     return []
 
 
-def has_any_from_set(lst, label_set):
-    """
-    lst: örn. ['bomb_weapons', 'exam_cheating']
-    label_set: örn. {'bomb_weapons', 'hate_abuse'}
-    -> Kesişim varsa True
-    """
-    return bool(set(lst) & label_set)
-
-
-def write_label_stats(df: pd.DataFrame, stats_path: str):
-    """
-    Tüm structure_labels ve labels kolonları için:
-    - Hangi labeldan kaç tane prompt var?
-    - Sonuçları txt dosyasına yazar (en çoktan en aza).
-    """
-    struct_counter = Counter()
-    content_counter = Counter()
-
-    # structure_labels sayımı
-    for lst in df[STRUCT_COL]:
-        for lab in lst:
-            struct_counter[lab] += 1
-
-    # content labels sayımı
-    for lst in df[LABEL_COL]:
-        for lab in lst:
-            content_counter[lab] += 1
-
-    # büyükten küçüğe sırala
-    struct_sorted = sorted(struct_counter.items(), key=lambda x: x[1], reverse=True)
-    content_sorted = sorted(content_counter.items(), key=lambda x: x[1], reverse=True)
-
-    with open(stats_path, "w", encoding="utf-8") as f:
-        f.write("=== STRUCTURE LABEL COUNTS ===\n")
-        for label, count in struct_sorted:
-            f.write(f"{label}: {count}\n")
-
-        f.write("\n\n=== CONTENT (BEHAVIOR) LABEL COUNTS ===\n")
-        for label, count in content_sorted:
-            f.write(f"{label}: {count}\n")
-
-    print(f"Label istatistikleri yazıldı: {stats_path}")
+def has_base_and_any_of(lst, base_label, other_labels):
+    """Return True if base label + at least one of other_labels is present."""
+    s = set(lst)
+    return (base_label in s) and bool(s & set(other_labels))
 
 
 def main():
-    print(f"Dosya okunuyor: {INPUT_CSV}")
+    print(f"Reading: {INPUT_CSV}")
     df = pd.read_csv(INPUT_CSV)
 
-    # labels ve structure_labels'ı listeye çevir
     df[LABEL_COL] = df[LABEL_COL].apply(to_list)
     df[STRUCT_COL] = df[STRUCT_COL].apply(to_list)
 
-    print(f"Toplam satır: {len(df)}")
+    print(f"Total rows: {len(df)}")
 
-    # === TÜM DATA İÇİN LABEL İSTATİSTİKLERİ ===
-    write_label_stats(df, OUTPUT_STATS)
-
-    # === STRUCTURE FİLTRESİ (yalnızca structure'a bakan OR filtresi) ===
-    struct_mask = df[STRUCT_COL].apply(lambda lst: has_any_from_set(lst, STRUCT_SET))
+    # === STRUCTURE FILTER ===
+    struct_mask = df[STRUCT_COL].apply(
+        lambda lst: has_base_and_any_of(lst, STRUCT_BASE, OTHER_STRUCTS)
+    )
     df_struct = df[struct_mask].copy()
-    print(f"Seçilen structure'lardan en az birini içeren satır sayısı: {len(df_struct)}")
+    print(f"Structure filter rows: {len(df_struct)}")
     df_struct.to_csv(OUTPUT_STRUCT, index=False)
-    print(f"Kaydedildi: {OUTPUT_STRUCT}")
+    print(f"Saved: {OUTPUT_STRUCT}")
 
-    # === CONTENT FİLTRESİ (yalnızca content'e bakan OR filtresi) ===
-    content_mask = df[LABEL_COL].apply(lambda lst: has_any_from_set(lst, CONTENT_SET))
+    # === CONTENT FILTER ===
+    content_mask = df[LABEL_COL].apply(
+        lambda lst: has_base_and_any_of(lst, BEHAV_BASE, OTHER_BEHAVS)
+    )
     df_content = df[content_mask].copy()
-    print(f"Seçilen content label'lardan en az birini içeren satır sayısı: {len(df_content)}")
+    print(f"Content filter rows: {len(df_content)}")
     df_content.to_csv(OUTPUT_CONTENT, index=False)
-    print(f"Kaydedildi: {OUTPUT_CONTENT}")
+    print(f"Saved: {OUTPUT_CONTENT}")
 
-    # === ORTAK FİLTRE: HEM STRUCTURE HEM CONTENT UYUMLU OLANLAR (AND) ===
-    joint_mask = struct_mask & content_mask
-    df_joint = df[joint_mask].copy()
-    print(f"Hem structure hem content şartını sağlayan satır sayısı: {len(df_joint)}")
-
-    # Aynı text birden fazla kez varsa unique olsun:
-    df_joint = df_joint.drop_duplicates(subset=[TEXT_COL]).reset_index(drop=True)
-
-    df_joint.to_csv(OUTPUT_COMBINED, index=False)
-    print(f"Initial Population kaydedildi: {OUTPUT_COMBINED}")
+    # FIX: this block was previously mis-indented outside the function body,
+    # causing a SyntaxError / NameError at module level.
+    # === COMBINED INITIAL POPULATION ===
+    df_combined = pd.concat([df_struct, df_content], ignore_index=True)
+    df_combined = df_combined.drop_duplicates(subset=[TEXT_COL]).reset_index(drop=True)
+    print(f"Initial Population (combined, unique) rows: {len(df_combined)}")
+    df_combined.to_csv(OUTPUT_COMBINED, index=False)
+    print(f"Saved: {OUTPUT_COMBINED}")
 
 
 if __name__ == "__main__":

@@ -1,10 +1,11 @@
 # Prompts vs Filters
 
-This repository implements a prompt-population evolution framework for studying prompt/filter coevolution in LLM safety research. The current main runner uses **Evolution Strategy (ES)** rather than crossover-based genetic algorithms, because the project focuses on mutation operators over prompt style, tone, and structure.
+This repository implements a prompt-population evolution framework for studying prompt/filter coevolution in LLM safety research. The current main runner uses a **CMA-ES-style Evolution Strategy** over prompt mutation controls rather than crossover-based genetic algorithms, because the project focuses on mutation operators over prompt style, tone, and structure.
 
 ## What is included
 
 - `evolutionary_strategy.py`: main ES implementation.
+  - `variant="cma_es"`: default CMA-ES-style adaptation over mutation style and mutation intensity.
   - `variant="one_fifth"`: global mutation intensity adapted with the 1/5 success rule.
   - `variant="self_adaptive"`: per-individual mutation intensity adapted with log-normal self-adaptation.
 - `run_es.py`: command-line entrypoint for ES runs.
@@ -46,10 +47,10 @@ If the SpaCy English model is not installed, the project still runs with a fallb
 This runs without an LLM server and uses placeholder model outputs. It is useful for checking imports, mutation flow, and ES bookkeeping:
 
 ```bash
-python run_es.py --dry-run --variant one_fifth --mu 3 --lambda 10 --generations 2
+python run_es.py --dry-run --variant cma_es --mu 3 --lambda 10 --generations 2
 ```
 
-Self-adaptive ES dry run:
+Legacy/self-adaptive ES dry run:
 
 ```bash
 python run_es.py --dry-run --variant self_adaptive --mu 3 --lambda 10 --generations 2
@@ -87,7 +88,7 @@ Run ES with explicit server URL:
 python run_es.py \
   --base-url http://127.0.0.1:8000 \
   --model local-qwen \
-  --variant one_fifth \
+  --variant cma_es \
   --mu 5 \
   --lambda 20 \
   --generations 10
@@ -98,7 +99,7 @@ Alternatively, use environment variables:
 ```bash
 export LOCAL_LLM_BASE_URL="http://127.0.0.1:8000"
 export LOCAL_LLM_API_KEY="YOUR_SECRET_KEY"  # optional
-python run_es.py --variant self_adaptive --mu 5 --lambda 20 --generations 10
+python run_es.py --variant cma_es --mu 5 --lambda 20 --generations 10
 ```
 
 Use `.env.example` as the template for local secrets. Do not commit real API keys.
@@ -108,13 +109,13 @@ Use `.env.example` as the template for local secrets. Do not commit real API key
 Scalar selection remains the default for backward compatibility. Lexicographical selection ranks candidates by ASV first, then minimizes MR as the tie-breaker:
 
 ```bash
-python run_es.py --dry-run --selection-mode lexicographic --mr-objective minimize --variant one_fifth --mu 3 --lambda 10 --generations 2
+python run_es.py --dry-run --selection-mode lexicographic --mr-objective minimize --variant cma_es --mu 3 --lambda 10 --generations 2
 ```
 
 Use `--mr-objective maximize` for the semantic-preservation variant, where ASV is still primary but higher MR wins ties and scalar fitness rewards MR directly. This lets experiments compare both interpretations:
 
 ```bash
-python run_es.py --dry-run --selection-mode lexicographic --mr-objective maximize --variant one_fifth --mu 3 --lambda 10 --generations 2
+python run_es.py --dry-run --selection-mode lexicographic --mr-objective maximize --variant cma_es --mu 3 --lambda 10 --generations 2
 ```
 
 ## Optional filter coevolution
@@ -151,6 +152,11 @@ The CSV contains:
 - mean_parent_fitness
 - success_rate
 - sigma
+- cma_mean_style
+- cma_mean_log_sigma
+- cma_cov_00
+- cma_cov_01
+- cma_cov_11
 - best_asv
 - best_mr
 - best_behavioral_deviation
@@ -176,9 +182,9 @@ python experiments/run_ablation.py --generations 2 --seeds 1,2,3
 
 Add `--with-filter-coevolution` to include the filter-update condition in dry-run bookkeeping.
 
-## Notes on sigma
+## Notes on CMA-ES and sigma
 
-In the MATLAB ES reference, `sigma` controls Gaussian mutation step size in a continuous vector space. In this prompt project, the search space is discrete text. Therefore, `sigma` is interpreted as mutation intensity: larger `sigma` values apply more consecutive prompt mutations.
+In the prompt project, the search space is discrete text. The CMA-ES variant therefore does not optimize text directly. It samples a small continuous control vector and maps it to mutation style and mutation intensity. `sigma` remains the base mutation intensity; `cma_step_size` and the learned covariance control exploration around style and intensity choices.
 
 ## Legacy GA runner
 

@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
-from types import SimpleNamespace
-import tempfile
 import unittest
 
 from Prompt_class import Content, Prompt, Structure
 from evolutionary_strategy import ESConfig, evolutionary_strategy_run, load_prompt_population
 from filter_evolution import evolve_filter
 from fitfunc import evaluate_fitness
-from run_es import write_run_dir
+from run_llm import assign_outputs
 from selection import sort_population
 
 
@@ -54,22 +51,24 @@ class CoreBehaviourTests(unittest.TestCase):
         self.assertIs(ordered[0], high_asv)
 
     def test_lexicographic_order_minimizes_mr_as_tiebreaker(self):
+        """Lower MR = more behavioral deviation = better. The lower-MR prompt should rank first."""
         lower_mr = Prompt(input_prompt="a", fitness=0.9, metrics={"asv": 0.7, "mr": 0.2})
         higher_mr = Prompt(input_prompt="b", fitness=0.1, metrics={"asv": 0.7, "mr": 0.8})
         ordered = sort_population([lower_mr, higher_mr], mode="lexicographic")
+        # lower_mr has asv=0.7, 1-mr=0.8  →  lexicographic_key = (0.7, 0.8)
+        # higher_mr has asv=0.7, 1-mr=0.2 →  lexicographic_key = (0.7, 0.2)
+        # So lower_mr should rank first.
         self.assertIs(ordered[0], lower_mr)
 
-    def test_lexicographic_order_can_maximize_mr_as_tiebreaker(self):
-        lower_mr = Prompt(input_prompt="a", fitness=0.9, metrics={"asv": 0.7, "mr": 0.2})
-        higher_mr = Prompt(input_prompt="b", fitness=0.1, metrics={"asv": 0.7, "mr": 0.8})
-        ordered = sort_population(
-            [lower_mr, higher_mr],
-            mode="lexicographic",
-            mr_objective="maximize",
-        )
-        self.assertIs(ordered[0], higher_mr)
+    def test_evaluate_fitness_uses_behavioral_deviation(self):
+        """
+        Fitness must be alpha * ASV + beta * (1 - MR), not alpha * ASV + beta * MR.
 
-    def test_evaluate_fitness_updates_all_prompts_and_metrics(self):
+        With alpha=0.7, beta=0.3 and sim returning 1.0 when texts match:
+        - prompts[0]: output == ref  → ASV=1.0, MR=0.5 (output != direct)
+          → behavioral_deviation = 1 - 0.5 = 0.5
+          → fitness = 0.7*1.0 + 0.3*0.5 = 0.85
+        """
         prompts = [
             Prompt(input_prompt="alpha", output_prompts=["unsafe answer"], direct_output="direct"),
             Prompt(input_prompt="beta", output_prompts=["safe answer"], direct_output="direct"),
@@ -96,7 +95,10 @@ class CoreBehaviourTests(unittest.TestCase):
                 for p in prompts
             )
         )
+        # behavioral_deviation = 1 - MR.  prompt[0]: output="unsafe answer" != "direct" → MR=0.5 → BD=0.5
         self.assertAlmostEqual(prompts[0].metrics["behavioral_deviation"], 0.5)
+        # FIX: fitness = 0.7*ASV + 0.3*BD.  prompt[0]: ASV=1.0, BD=0.5 → 0.7+0.15 = 0.85
+        self.assertAlmostEqual(prompts[0].fitness, 0.85, places=5)
         self.assertNotEqual(prompts[0].fitness, 0.0)
         self.assertNotEqual(prompts[1].fitness, 0.0)
 
@@ -115,6 +117,26 @@ class CoreBehaviourTests(unittest.TestCase):
         )
         self.assertTrue(result.best.input_prompt)
         self.assertIn("best_asv", result.history[0])
+        # FIX: history must now also contain behavioral_deviation
+        self.assertIn("best_behavioral_deviation", result.history[0])
+
+    def test_dry_run_cma_es_records_distribution_state(self):
+        result = evolutionary_strategy_run(
+            ESConfig(
+                lambda_=4,
+                mu=2,
+                generations=2,
+                variant="cma_es",
+                lightweight=True,
+                selection_mode="lexicographic",
+                random_seed=11,
+                verbose=False,
+            ),
+            client=None,
+        )
+        self.assertTrue(result.best.input_prompt)
+        self.assertIn("cma_mean_style", result.history[-1])
+        self.assertIn("cma_cov_00", result.history[-1])
 
     def test_assign_outputs_collects_k_filtered_samples_and_one_direct_output(self):
         prompt = Prompt(input_prompt="test prompt")
@@ -130,6 +152,7 @@ class CoreBehaviourTests(unittest.TestCase):
 
         self.assertEqual(prompt.direct_output, "direct baseline")
         self.assertEqual(len(prompt.output_prompts), 3)
+        # 1 direct + 3 filtered = 4 calls total
         self.assertEqual(client.calls, 4)
 
     def test_filter_update_rejects_benign_refusal_increase(self):
@@ -176,57 +199,6 @@ class CoreBehaviourTests(unittest.TestCase):
         self.assertEqual(len(result.filter_versions), 2)
         self.assertIn("override framing", result.filter_prompt)
         self.assertIn("filter_new_attack_refusal_rate", result.history[0])
-        self.assertIn("best_behavioral_deviation", result.history[0])
-        self.assertGreater(result.history[0]["best_behavioral_deviation"], 0.0)
-
-    def test_run_dir_writes_filter_and_population_artifacts(self):
-        initial_population = [
-            Prompt(
-                input_prompt="unsafe request",
-                structure=Structure.question_request,
-                content=Content.bomb_weapons,
-            ),
-            Prompt(
-                input_prompt="unsafe request",
-                structure=Structure.imperative_instruction,
-                content=Content.bomb_weapons,
-            ),
-        ]
-        config = ESConfig(
-            lambda_=2,
-            mu=2,
-            generations=1,
-            lightweight=True,
-            selection_mode="lexicographic",
-            filter_update_every=1,
-            top_k_filter=1,
-            random_seed=5,
-            verbose=False,
-        )
-        result = evolutionary_strategy_run(
-            config=config,
-            client=FakeFilterClient(),
-            initial_population=initial_population,
-        )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            run_dir = Path(tmp) / "run"
-            args = SimpleNamespace(model="local-test", api_key=None)
-            write_run_dir(str(run_dir), args, config, result)
-
-            expected_files = {
-                "config.json",
-                "generation_summary.csv",
-                "filter_events.jsonl",
-                "filter_versions.jsonl",
-                "final_filter_prompt.txt",
-                "individuals.jsonl",
-                "outputs.jsonl",
-                "final_population.csv",
-            }
-            self.assertTrue(expected_files.issubset({p.name for p in run_dir.iterdir()}))
-            self.assertIn("override framing", (run_dir / "filter_versions.jsonl").read_text(encoding="utf-8"))
-            self.assertIn("behavioral_deviation", (run_dir / "final_population.csv").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

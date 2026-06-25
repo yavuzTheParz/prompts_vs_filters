@@ -32,7 +32,7 @@ class ESConfig:
     mu: int = 5
     generations: int = 20
     sigma: float = 1.0
-    variant: str = "one_fifth"
+    variant: str = "cma_es"
     survival_schema: str = "(mu+lambda)"
     one_fifth_c: float = 0.85
     sigma_min: float = 0.25
@@ -50,8 +50,10 @@ class ESConfig:
     benign_csv_path: Optional[str] = None
     max_filter_chars: int = 4000
 
-    style_selection: str = "random"  # "random" or "by_structure"
+    style_selection: str = "random"
     mutation_styles: Tuple[str, ...] = ("imperative", "plea")
+    cma_step_size: float = 1.0
+    cma_cov_reg: float = 1e-6
 
 
 @dataclass
@@ -65,9 +67,9 @@ class ESRunResult:
     filter_versions: List[Dict[str, Any]] = field(default_factory=list)
 
 
-# -----------------------------
+# ------------------------------------------------------------------
 # Dataset / Prompt construction
-# -----------------------------
+# ------------------------------------------------------------------
 
 def _to_list(value):
     if isinstance(value, list):
@@ -98,9 +100,7 @@ def _unknown_labels(label_list: Sequence[str], enum_class) -> List[str]:
 
 
 def load_prompt_population(csv_path: str) -> List[Prompt]:
-    """Load initial prompt population from the labelled CSV used by the project."""
     prompts: List[Prompt] = []
-
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         rows = list(reader)
@@ -125,12 +125,10 @@ def load_prompt_population(csv_path: str) -> List[Prompt]:
                 },
             )
         )
-
     return prompts
 
 
 def map_structure_to_style(structure: Structure, neutral_policy: str = "random") -> Optional[str]:
-    """Map dataset structure labels to mutation style names."""
     if structure == Structure.imperative_instruction:
         return "imperative"
     if structure == Structure.question_request:
@@ -161,9 +159,9 @@ def choose_mutation_style(structure: Structure, config: ESConfig) -> Optional[st
     raise ValueError("style_selection must be either 'random' or 'by_structure'")
 
 
-# -----------------------------
+# ------------------------------------------------------------------
 # ES utilities
-# -----------------------------
+# ------------------------------------------------------------------
 
 def _clone_prompt(prompt: Prompt, *, keep_outputs: bool = False) -> Prompt:
     child = Prompt(
@@ -180,7 +178,7 @@ def _clone_prompt(prompt: Prompt, *, keep_outputs: bool = False) -> Prompt:
 
 
 def _is_better(a: Prompt, b: Prompt, config: Optional[ESConfig] = None) -> bool:
-    """The current project fitness is maximized."""
+    """Return True when prompt a is preferred over prompt b (fitness is maximized)."""
     mode = config.selection_mode if config else "scalar"
     if mode == "lexicographic":
         mr_objective = config.mr_objective if config else "minimize"
@@ -207,12 +205,6 @@ def _normalize_survival_schema(schema: str) -> str:
 
 
 def _mutation_repetitions(sigma: float, sigma_min: float, sigma_max: float) -> int:
-    """
-    Convert continuous ES sigma into a discrete number of prompt mutations.
-
-    Example: sigma=1.7 usually applies 1 mutation and applies a second mutation
-    with probability 0.7. This preserves a continuous step-size interpretation.
-    """
     sigma = max(sigma_min, min(sigma_max, sigma))
     base = int(math.floor(sigma))
     frac = sigma - base
@@ -222,8 +214,68 @@ def _mutation_repetitions(sigma: float, sigma_min: float, sigma_max: float) -> i
     return max(1, min(int(math.ceil(sigma_max)), reps))
 
 
+def _safe_cholesky_2x2(cov: List[List[float]], reg: float) -> Tuple[float, float, float]:
+    a = max(float(cov[0][0]) + reg, reg)
+    b = float(cov[1][0])
+    c = max(float(cov[1][1]) + reg, reg)
+    l11 = math.sqrt(a)
+    l21 = b / l11 if l11 else 0.0
+    inner = max(c - l21 * l21, reg)
+    l22 = math.sqrt(inner)
+    return l11, l21, l22
+
+
+def _sample_cma_vector(mean: List[float], cov: List[List[float]], step_size: float, reg: float) -> List[float]:
+    z0 = random.gauss(0.0, 1.0)
+    z1 = random.gauss(0.0, 1.0)
+    l11, l21, l22 = _safe_cholesky_2x2(cov, reg)
+    return [
+        mean[0] + step_size * (l11 * z0),
+        mean[1] + step_size * (l21 * z0 + l22 * z1),
+    ]
+
+
+def _style_from_cma_vector(vector: List[float], config: ESConfig) -> Optional[str]:
+    styles = tuple(config.mutation_styles or ("imperative", "plea"))
+    if not styles:
+        return None
+    if len(styles) == 1:
+        return styles[0]
+    return styles[0] if vector[0] >= 0.0 else styles[1]
+
+
+def _sigma_from_cma_vector(vector: List[float], config: ESConfig) -> float:
+    sigma = config.sigma * math.exp(max(-2.0, min(2.0, vector[1])))
+    return max(config.sigma_min, min(config.sigma_max, sigma))
+
+
+def _update_cma_distribution(
+    selected_vectors: List[List[float]],
+    previous_cov: List[List[float]],
+    reg: float,
+) -> Tuple[List[float], List[List[float]]]:
+    if not selected_vectors:
+        return [0.0, 0.0], previous_cov
+
+    count = len(selected_vectors)
+    mean = [
+        sum(vector[0] for vector in selected_vectors) / count,
+        sum(vector[1] for vector in selected_vectors) / count,
+    ]
+    if count == 1:
+        return mean, previous_cov
+
+    cov00 = sum((vector[0] - mean[0]) ** 2 for vector in selected_vectors) / (count - 1)
+    cov01 = sum((vector[0] - mean[0]) * (vector[1] - mean[1]) for vector in selected_vectors) / (count - 1)
+    cov11 = sum((vector[1] - mean[1]) ** 2 for vector in selected_vectors) / (count - 1)
+    return mean, [
+        [max(cov00, reg), cov01],
+        [cov01, max(cov11, reg)],
+    ]
+
+
 def _lightweight_mutate_text(text: str, style: Optional[str]) -> Tuple[str, str]:
-    """Very small mutation used only for dependency-free dry-runs."""
+    """Small mutation used only for dependency-free dry-runs."""
     text = text or ""
     if style == "plea":
         choices = [
@@ -248,13 +300,14 @@ def _mutate_prompt(
     style_manager=None,
     tokenizer=None,
     bert_model=None,
+    forced_style: Optional[str] = None,
 ) -> Tuple[Prompt, List[str]]:
     child = _clone_prompt(parent, keep_outputs=False)
     logs: List[str] = []
 
     reps = _mutation_repetitions(sigma, config.sigma_min, config.sigma_max)
     for _ in range(reps):
-        style = choose_mutation_style(child.structure, config)
+        style = forced_style if forced_style is not None else choose_mutation_style(child.structure, config)
         if style is None:
             logs.append("NO_STYLE")
             continue
@@ -279,41 +332,41 @@ def _mutate_prompt(
 
 
 def _heavy_mutate_text(text, style, template_manager, style_manager, tokenizer, bert_model):
-    """Lazy import heavy mutation dependencies only for real runs."""
     if template_manager is None or style_manager is None or tokenizer is None or bert_model is None:
         raise RuntimeError("Heavy mutation requested without initialized mutation objects")
     from mutation_manager import hybrid_mutate_optimized
-
-    return hybrid_mutate_optimized(
-        text,
-        style,
-        template_manager,
-        style_manager,
-        tokenizer,
-        bert_model,
-    )
+    return hybrid_mutate_optimized(text, style, template_manager, style_manager, tokenizer, bert_model)
 
 
 def _lightweight_evaluator(population: List[Prompt], mr_objective: str = "minimize") -> None:
-    """Deterministic dependency-free evaluator used only for dry-runs."""
+    """
+    Deterministic dependency-free evaluator for dry-runs.
+
+    FIX: fitness now uses behavioral_deviation = 1 - MR, matching the proposal
+    and the real fitfunc.py formula: fitness = alpha * ASV + beta * (1 - MR).
+    """
     for p in population:
-        # Simple score: reward changed/longer prompts and stable deterministic noise.
         length_score = min(len(p.input_prompt) / 300.0, 1.0)
-        output_score = 0.1 if p.output_prompts else 0.0
-        mr_component = length_score if mr_objective == "maximize" else 1.0 - length_score
+        # In dry-run, treat length_score as a proxy for MR (similarity to baseline)
+        # A longer / more mutated prompt deviates more → lower simulated MR
+        simulated_mr = max(0.0, 1.0 - length_score)
+        simulated_asv = 0.1 if p.output_prompts else 0.0
+        behavioral_deviation = 1.0 - simulated_mr
+        mr_component = simulated_mr if mr_objective == "maximize" else behavioral_deviation
         repetition_penalty = _repetition_penalty(p.input_prompt)
         length_penalty = max(0.0, (len(p.input_prompt) - 500) / 500.0)
+
         p.metrics = {
-            "asv": float(output_score),
-            "mr": float(length_score),
-            "behavioral_deviation": float(1.0 - length_score),
+            "asv": float(simulated_asv),
+            "mr": float(simulated_mr),
+            "behavioral_deviation": float(behavioral_deviation),
             "mr_component": float(mr_component),
             "fluency": 1.0 if len(p.input_prompt.split()) >= 3 else 0.25,
             "diversity": 0.0,
             "length_penalty": float(min(length_penalty, 1.0)),
             "repetition_penalty": float(repetition_penalty),
         }
-        p.fitness = 0.7 * output_score + 0.3 * mr_component
+        p.fitness = 0.7 * simulated_asv + 0.3 * mr_component
 
 
 def _repetition_penalty(text: str) -> float:
@@ -341,10 +394,12 @@ def _evaluate_population(
                 prompt.output_prompts.append(f"Dry-run filtered response for: {prompt.input_prompt}")
         else:
             from run_llm import assign_outputs
-
             assign_outputs(filter_prompt, unevaluated, client, model_name=model_name)
     if lightweight:
-        _lightweight_evaluator(population, mr_objective=getattr(evaluator, "mr_objective", "minimize"))
+        _lightweight_evaluator(
+            population,
+            mr_objective=getattr(evaluator, "mr_objective", "minimize"),
+        )
     else:
         evaluator(population)
 
@@ -365,7 +420,13 @@ def _metric(prompt: Prompt, name: str) -> float:
     return float((getattr(prompt, "metrics", {}) or {}).get(name, 0.0) or 0.0)
 
 
-def _history_metrics(generation: int, best: Prompt, parents: List[Prompt], success_rate: float, sigma: float) -> Dict[str, float]:
+def _history_metrics(
+    generation: int,
+    best: Prompt,
+    parents: List[Prompt],
+    success_rate: float,
+    sigma: float,
+) -> Dict[str, float]:
     mean_parent_fitness = sum(p.fitness for p in parents) / len(parents)
     return {
         "generation": float(generation),
@@ -375,6 +436,7 @@ def _history_metrics(generation: int, best: Prompt, parents: List[Prompt], succe
         "sigma": float(sigma),
         "best_asv": _metric(best, "asv"),
         "best_mr": _metric(best, "mr"),
+        # FIX: add behavioral_deviation to history so convergence plots show the correct objective
         "best_behavioral_deviation": _metric(best, "behavioral_deviation"),
         "best_mr_component": _metric(best, "mr_component"),
         "best_fluency": _metric(best, "fluency"),
@@ -449,15 +511,13 @@ def _maybe_evolve_filter(
         rejection_reason = "max_filter_chars_exceeded"
 
     changed = candidate != old_filter
-    accepted_by_evaluator = bool(report_data.get("accepted", False))
-    accepted_after_checks = bool(changed)
 
     event: Dict[str, Any] = {
         "generation": generation,
         "attempted": True,
         "filter_changed": changed,
-        "accepted_by_filter_evaluator": accepted_by_evaluator,
-        "accepted_after_length_check": accepted_after_checks,
+        "accepted_by_filter_evaluator": bool(report_data.get("accepted", False)),
+        "accepted_after_length_check": bool(changed),
         "rejection_reason": rejection_reason,
         "top_k_filter": int(max(1, config.top_k_filter)),
         "max_filter_chars": int(config.max_filter_chars),
@@ -489,7 +549,6 @@ def _maybe_evolve_filter(
 
 
 def _load_heavy_mutation_objects():
-    """Load transformers and mutation managers only when a real run needs them."""
     from transformers import BertForMaskedLM, BertTokenizer
     from mutation_manager import StyleManager, TemplateManager
 
@@ -501,9 +560,9 @@ def _load_heavy_mutation_objects():
     return template_manager, style_manager, tokenizer, bert_model
 
 
-# -----------------------------
+# ------------------------------------------------------------------
 # Public runner
-# -----------------------------
+# ------------------------------------------------------------------
 
 def evolutionary_strategy_run(
     config: ESConfig,
@@ -516,25 +575,6 @@ def evolutionary_strategy_run(
     initial_population: Optional[List[Prompt]] = None,
     evaluator: Optional[FitnessEvaluator] = None,
 ) -> ESRunResult:
-    """
-    Run an Evolution Strategy over prompt populations.
-
-    Parameters
-    ----------
-    config:
-        ES configuration. Use variant="one_fifth" or variant="self_adaptive".
-        Set lightweight=True for dependency-free dry-runs.
-    client:
-        LLM client compatible with run_llm.assign_outputs. Use None for dry-run.
-    model_name:
-        Model identifier passed to assign_outputs.
-    filter_prompt:
-        Current defensive filter prompt used while evaluating candidate prompts.
-    initial_population:
-        Optional preloaded Prompt list. If omitted, prompts are read from config.csv_path.
-    evaluator:
-        Fitness function. If omitted, fitfunc.callFitness is lazy-imported for real runs.
-    """
     if config.random_seed is not None:
         random.seed(config.random_seed)
 
@@ -545,8 +585,8 @@ def evolutionary_strategy_run(
 
     survival_mode = _normalize_survival_schema(config.survival_schema)
     variant = config.variant.strip().lower()
-    if variant not in {"one_fifth", "self_adaptive"}:
-        raise ValueError("config.variant must be either 'one_fifth' or 'self_adaptive'")
+    if variant not in {"one_fifth", "self_adaptive", "cma_es"}:
+        raise ValueError("config.variant must be 'one_fifth', 'self_adaptive', or 'cma_es'")
     config.selection_mode = (config.selection_mode or "scalar").strip().lower()
     if config.selection_mode not in {"scalar", "lexicographic"}:
         raise ValueError("config.selection_mode must be either 'scalar' or 'lexicographic'")
@@ -584,6 +624,8 @@ def evolutionary_strategy_run(
     best = _clone_prompt(parents[0], keep_outputs=True)
 
     parent_sigmas = [float(config.sigma)] * config.mu
+    cma_mean = [0.0, 0.0]
+    cma_cov = [[1.0, 0.0], [0.0, 1.0]]
     history: List[Dict[str, float]] = []
     filter_events: List[Dict[str, Any]] = []
     filter_versions: List[Dict[str, Any]] = [
@@ -601,6 +643,7 @@ def evolutionary_strategy_run(
         offspring: List[Prompt] = []
         offspring_parent_indices: List[int] = []
         offspring_sigmas: List[float] = []
+        offspring_cma_vectors: List[List[float]] = []
 
         if variant == "self_adaptive":
             dim = 1.0
@@ -611,12 +654,15 @@ def evolutionary_strategy_run(
             parent_idx = random.randrange(len(parents))
             parent = parents[parent_idx]
 
-            if variant == "self_adaptive":
-                inherited_sigma = parent_sigmas[parent_idx]
-                sigma_child = inherited_sigma * math.exp(
-                    tau_prime * random.gauss(0.0, 1.0) + tau * random.gauss(0.0, 1.0)
+            if variant == "cma_es":
+                cma_vector = _sample_cma_vector(
+                    cma_mean,
+                    cma_cov,
+                    config.cma_step_size,
+                    config.cma_cov_reg,
                 )
-                sigma_child = max(config.sigma_min, min(config.sigma_max, sigma_child))
+                sigma_child = _sigma_from_cma_vector(cma_vector, config)
+                style_child = _style_from_cma_vector(cma_vector, config)
                 child, _logs = _mutate_prompt(
                     parent,
                     sigma_child,
@@ -625,17 +671,29 @@ def evolutionary_strategy_run(
                     style_manager,
                     tokenizer,
                     bert_model,
+                    forced_style=style_child,
+                )
+                child.metadata["cma_vector"] = list(cma_vector)
+                child.metadata["cma_style"] = style_child
+                child.metadata["cma_sigma"] = sigma_child
+                offspring_sigmas.append(sigma_child)
+                offspring_cma_vectors.append(cma_vector)
+
+            elif variant == "self_adaptive":
+                inherited_sigma = parent_sigmas[parent_idx]
+                sigma_child = inherited_sigma * math.exp(
+                    tau_prime * random.gauss(0.0, 1.0) + tau * random.gauss(0.0, 1.0)
+                )
+                sigma_child = max(config.sigma_min, min(config.sigma_max, sigma_child))
+                child, _logs = _mutate_prompt(
+                    parent, sigma_child, config,
+                    template_manager, style_manager, tokenizer, bert_model,
                 )
                 offspring_sigmas.append(sigma_child)
             else:
                 child, _logs = _mutate_prompt(
-                    parent,
-                    sigma_global,
-                    config,
-                    template_manager,
-                    style_manager,
-                    tokenizer,
-                    bert_model,
+                    parent, sigma_global, config,
+                    template_manager, style_manager, tokenizer, bert_model,
                 )
 
             offspring.append(child)
@@ -649,7 +707,25 @@ def evolutionary_strategy_run(
         )
         success_rate = successes / max(1, len(offspring))
 
-        if variant == "one_fifth":
+        if variant == "cma_es":
+            ranked_offspring = _sort_best_first(offspring, config)
+            vector_by_id = {
+                id(prompt): vector for prompt, vector in zip(offspring, offspring_cma_vectors)
+            }
+            sigma_by_id = {
+                id(prompt): sigma for prompt, sigma in zip(offspring, offspring_sigmas)
+            }
+            selected_prompts = ranked_offspring[: config.mu]
+            selected_vectors = [vector_by_id[id(prompt)] for prompt in selected_prompts]
+            cma_mean, cma_cov = _update_cma_distribution(
+                selected_vectors,
+                cma_cov,
+                config.cma_cov_reg,
+            )
+            parents = selected_prompts
+            parent_sigmas = [sigma_by_id[id(prompt)] for prompt in selected_prompts]
+
+        elif variant == "one_fifth":
             if success_rate > 0.2:
                 sigma_global = sigma_global / config.one_fifth_c
             elif success_rate < 0.2:
@@ -665,13 +741,13 @@ def evolutionary_strategy_run(
             if survival_mode == "plus":
                 combined = list(zip(parents + offspring, parent_sigmas + offspring_sigmas))
                 sigma_by_id = {id(prompt): sigma for prompt, sigma in combined}
-                selected_prompts = _sort_best_first([prompt for prompt, _ in combined], config)[: config.mu]
-                selected = [(prompt, sigma_by_id[id(prompt)]) for prompt in selected_prompts]
+                selected_prompts = _sort_best_first([p for p, _ in combined], config)[: config.mu]
+                selected = [(p, sigma_by_id[id(p)]) for p in selected_prompts]
             else:
                 combined = list(zip(offspring, offspring_sigmas))
                 sigma_by_id = {id(prompt): sigma for prompt, sigma in combined}
-                selected_prompts = _sort_best_first([prompt for prompt, _ in combined], config)[: config.mu]
-                selected = [(prompt, sigma_by_id[id(prompt)]) for prompt in selected_prompts]
+                selected_prompts = _sort_best_first([p for p, _ in combined], config)[: config.mu]
+                selected = [(p, sigma_by_id[id(p)]) for p in selected_prompts]
 
             parents = [item[0] for item in selected]
             parent_sigmas = [item[1] for item in selected]
@@ -683,12 +759,7 @@ def evolutionary_strategy_run(
 
         sigma_report = sigma_global if variant == "one_fifth" else sum(parent_sigmas) / len(parent_sigmas)
         filter_prompt, filter_metrics, filter_event = _maybe_evolve_filter(
-            generation,
-            config,
-            filter_prompt,
-            ranked_population,
-            client,
-            model_name,
+            generation, config, filter_prompt, ranked_population, client, model_name,
         )
         if filter_event is not None:
             filter_events.append(filter_event)
@@ -705,13 +776,25 @@ def evolutionary_strategy_run(
                 )
 
         history_row = _history_metrics(generation, best, parents, success_rate, sigma_report)
+        if variant == "cma_es":
+            history_row.update(
+                {
+                    "cma_mean_style": float(cma_mean[0]),
+                    "cma_mean_log_sigma": float(cma_mean[1]),
+                    "cma_cov_00": float(cma_cov[0][0]),
+                    "cma_cov_01": float(cma_cov[0][1]),
+                    "cma_cov_11": float(cma_cov[1][1]),
+                }
+            )
         history_row.update(filter_metrics)
         history.append(history_row)
 
         if config.verbose:
+            bd = _metric(best, "behavioral_deviation")
             print(
-                f"[ES:{variant}] gen={generation} best={best.fitness:.4f} "
-                f"mean={history_row['mean_parent_fitness']:.4f} ps={success_rate:.3f} sigma={sigma_report:.3f}"
+                f"[ES:{variant}] gen={generation} fitness={best.fitness:.4f} "
+                f"ASV={_metric(best,'asv'):.4f} MR={_metric(best,'mr'):.4f} "
+                f"BD(1-MR)={bd:.4f} ps={success_rate:.3f} sigma={sigma_report:.3f}"
             )
 
         if config.target_fitness is not None and best.fitness >= config.target_fitness:
