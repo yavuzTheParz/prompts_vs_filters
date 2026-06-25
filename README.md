@@ -105,10 +105,16 @@ Use `.env.example` as the template for local secrets. Do not commit real API key
 
 ## Lexicographical selection
 
-Scalar selection remains the default for backward compatibility. Lexicographical selection ranks candidates by ASV first, then uses MR only as the tie-breaker:
+Scalar selection remains the default for backward compatibility. Lexicographical selection ranks candidates by ASV first, then minimizes MR as the tie-breaker:
 
 ```bash
-python run_es.py --dry-run --selection lexicographic --variant one_fifth --mu 3 --lambda 10 --generations 2
+python run_es.py --dry-run --selection-mode lexicographic --mr-objective minimize --variant one_fifth --mu 3 --lambda 10 --generations 2
+```
+
+Use `--mr-objective maximize` for the semantic-preservation variant, where ASV is still primary but higher MR wins ties and scalar fitness rewards MR directly. This lets experiments compare both interpretations:
+
+```bash
+python run_es.py --dry-run --selection-mode lexicographic --mr-objective maximize --variant one_fifth --mu 3 --lambda 10 --generations 2
 ```
 
 ## Optional filter coevolution
@@ -118,13 +124,17 @@ Filter updates are disabled by default. To try a candidate filter rule every gen
 ```bash
 python run_es.py \
   --base-url http://127.0.0.1:8000 \
-  --selection lexicographic \
+  --selection-mode lexicographic \
+  --mr-objective minimize \
   --filter-update-every 1 \
   --top-k-filter 5 \
-  --benign-csv prompts/benign.csv
+  --benign-csv prompts/benign.csv \
+  --run-dir outputs/runs/pilot_001
 ```
 
 If `--benign-csv` is omitted, a small built-in benign sanity set is used. For real experiments, provide a representative benign set so the filter cannot improve by refusing everything.
+
+When `--run-dir` is set, the run directory stores `config.json`, `generation_summary.csv`, `filter_events.jsonl`, `filter_versions.jsonl`, `final_filter_prompt.txt`, `individuals.jsonl`, `outputs.jsonl`, and `final_population.csv`.
 
 ## Output
 
@@ -143,12 +153,18 @@ The CSV contains:
 - sigma
 - best_asv
 - best_mr
+- best_behavioral_deviation
 - best_fluency
 - best_diversity
 - best_length_penalty
 - best_repetition_penalty
+- filter_attempted
 - filter_changed
 - filter_length
+- filter_old_attack_refusal_rate
+- filter_new_attack_refusal_rate
+- filter_old_benign_refusal_rate
+- filter_new_benign_refusal_rate
 
 ## Ablation runner
 

@@ -44,6 +44,7 @@ class ESConfig:
     random_seed: Optional[int] = None
     lightweight: bool = False
     selection_mode: str = "scalar"
+    mr_objective: str = "minimize"
     filter_update_every: int = 0
     top_k_filter: int = 5
     benign_csv_path: Optional[str] = None
@@ -182,13 +183,18 @@ def _is_better(a: Prompt, b: Prompt, config: Optional[ESConfig] = None) -> bool:
     """The current project fitness is maximized."""
     mode = config.selection_mode if config else "scalar"
     if mode == "lexicographic":
-        return lexicographic_key(a) > lexicographic_key(b)
+        mr_objective = config.mr_objective if config else "minimize"
+        return lexicographic_key(a, mr_objective=mr_objective) > lexicographic_key(
+            b,
+            mr_objective=mr_objective,
+        )
     return scalar_key(a) > scalar_key(b)
 
 
 def _sort_best_first(population: List[Prompt], config: Optional[ESConfig] = None) -> List[Prompt]:
     mode = config.selection_mode if config else "scalar"
-    return sort_population(population, mode=mode)
+    mr_objective = config.mr_objective if config else "minimize"
+    return sort_population(population, mode=mode, mr_objective=mr_objective)
 
 
 def _normalize_survival_schema(schema: str) -> str:
@@ -288,23 +294,26 @@ def _heavy_mutate_text(text, style, template_manager, style_manager, tokenizer, 
     )
 
 
-def _lightweight_evaluator(population: List[Prompt]) -> None:
+def _lightweight_evaluator(population: List[Prompt], mr_objective: str = "minimize") -> None:
     """Deterministic dependency-free evaluator used only for dry-runs."""
     for p in population:
         # Simple score: reward changed/longer prompts and stable deterministic noise.
         length_score = min(len(p.input_prompt) / 300.0, 1.0)
         output_score = 0.1 if p.output_prompts else 0.0
+        mr_component = length_score if mr_objective == "maximize" else 1.0 - length_score
         repetition_penalty = _repetition_penalty(p.input_prompt)
         length_penalty = max(0.0, (len(p.input_prompt) - 500) / 500.0)
         p.metrics = {
             "asv": float(output_score),
             "mr": float(length_score),
+            "behavioral_deviation": float(1.0 - length_score),
+            "mr_component": float(mr_component),
             "fluency": 1.0 if len(p.input_prompt.split()) >= 3 else 0.25,
             "diversity": 0.0,
             "length_penalty": float(min(length_penalty, 1.0)),
             "repetition_penalty": float(repetition_penalty),
         }
-        p.fitness = 0.5 * length_score + output_score
+        p.fitness = 0.7 * output_score + 0.3 * mr_component
 
 
 def _repetition_penalty(text: str) -> float:
@@ -335,7 +344,7 @@ def _evaluate_population(
 
             assign_outputs(filter_prompt, unevaluated, client, model_name=model_name)
     if lightweight:
-        _lightweight_evaluator(population)
+        _lightweight_evaluator(population, mr_objective=getattr(evaluator, "mr_objective", "minimize"))
     else:
         evaluator(population)
 
@@ -366,6 +375,8 @@ def _history_metrics(generation: int, best: Prompt, parents: List[Prompt], succe
         "sigma": float(sigma),
         "best_asv": _metric(best, "asv"),
         "best_mr": _metric(best, "mr"),
+        "best_behavioral_deviation": _metric(best, "behavioral_deviation"),
+        "best_mr_component": _metric(best, "mr_component"),
         "best_fluency": _metric(best, "fluency"),
         "best_diversity": _metric(best, "diversity"),
         "best_length_penalty": _metric(best, "length_penalty"),
@@ -539,16 +550,26 @@ def evolutionary_strategy_run(
     config.selection_mode = (config.selection_mode or "scalar").strip().lower()
     if config.selection_mode not in {"scalar", "lexicographic"}:
         raise ValueError("config.selection_mode must be either 'scalar' or 'lexicographic'")
+    config.mr_objective = (config.mr_objective or "minimize").strip().lower()
+    if config.mr_objective not in {"minimize", "maximize"}:
+        raise ValueError("config.mr_objective must be either 'minimize' or 'maximize'")
 
     if config.lightweight:
         template_manager = style_manager = tokenizer = bert_model = None
         if evaluator is None:
-            evaluator = _lightweight_evaluator
+            def _configured_lightweight(population):
+                return _lightweight_evaluator(population, mr_objective=config.mr_objective)
+
+            _configured_lightweight.mr_objective = config.mr_objective
+            evaluator = _configured_lightweight
     else:
         template_manager, style_manager, tokenizer, bert_model = _load_heavy_mutation_objects()
         if evaluator is None:
             from fitfunc import callFitness
-            evaluator = callFitness
+            evaluator = lambda population: callFitness(
+                population,
+                mr_objective=config.mr_objective,
+            )
 
     source_population = initial_population or load_prompt_population(config.csv_path)
     if len(source_population) < config.mu:

@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Optional
 
 from evolutionary_strategy import ESConfig, evolutionary_strategy_run
-from llm_client import LocalLLMClient
 
 
 DEFAULT_FILTER_PROMPT = (
@@ -18,7 +17,7 @@ DEFAULT_FILTER_PROMPT = (
 )
 
 
-def build_client(args) -> Optional[LocalLLMClient]:
+def build_client(args) -> Optional[object]:
     if args.dry_run:
         return None
 
@@ -32,6 +31,8 @@ def build_client(args) -> Optional[LocalLLMClient]:
         )
         args.dry_run = True
         return None
+
+    from llm_client import LocalLLMClient
 
     return LocalLLMClient(
         base_url=base_url,
@@ -53,6 +54,8 @@ def write_history_csv(path: str, history):
         "sigma",
         "best_asv",
         "best_mr",
+        "best_behavioral_deviation",
+        "best_mr_component",
         "best_fluency",
         "best_diversity",
         "best_length_penalty",
@@ -85,6 +88,72 @@ def _write_jsonl(path: Path, rows) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def _prompt_payload(prompt, rank: int) -> dict:
+    metrics = dict(getattr(prompt, "metrics", {}) or {})
+    metadata = dict(getattr(prompt, "metadata", {}) or {})
+    return {
+        "rank": rank,
+        "input_prompt": getattr(prompt, "input_prompt", ""),
+        "fitness": float(getattr(prompt, "fitness", 0.0) or 0.0),
+        "metrics": metrics,
+        "structure": getattr(getattr(prompt, "structure", None), "name", str(getattr(prompt, "structure", ""))),
+        "content": getattr(getattr(prompt, "content", None), "name", str(getattr(prompt, "content", ""))),
+        "direct_output": getattr(prompt, "direct_output", ""),
+        "output_prompts": list(getattr(prompt, "output_prompts", []) or []),
+        "metadata": metadata,
+    }
+
+
+def _write_final_population_csv(path: Path, population) -> None:
+    fieldnames = [
+        "rank",
+        "fitness",
+        "asv",
+        "mr",
+        "behavioral_deviation",
+        "mr_component",
+        "structure",
+        "content",
+        "input_prompt",
+        "direct_output",
+        "output_count",
+        "metadata_json",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for rank, prompt in enumerate(population, start=1):
+            metrics = dict(getattr(prompt, "metrics", {}) or {})
+            metadata = dict(getattr(prompt, "metadata", {}) or {})
+            writer.writerow(
+                {
+                    "rank": rank,
+                    "fitness": float(getattr(prompt, "fitness", 0.0) or 0.0),
+                    "asv": metrics.get("asv", 0.0),
+                    "mr": metrics.get("mr", 0.0),
+                    "behavioral_deviation": metrics.get("behavioral_deviation", 0.0),
+                    "mr_component": metrics.get("mr_component", 0.0),
+                    "structure": getattr(getattr(prompt, "structure", None), "name", ""),
+                    "content": getattr(getattr(prompt, "content", None), "name", ""),
+                    "input_prompt": getattr(prompt, "input_prompt", ""),
+                    "direct_output": getattr(prompt, "direct_output", ""),
+                    "output_count": len(getattr(prompt, "output_prompts", []) or []),
+                    "metadata_json": json.dumps(metadata, ensure_ascii=False),
+                }
+            )
+
+
+def _output_rows(population):
+    for rank, prompt in enumerate(population, start=1):
+        for output_index, output_text in enumerate(getattr(prompt, "output_prompts", []) or [], start=1):
+            yield {
+                "rank": rank,
+                "output_index": output_index,
+                "input_prompt": getattr(prompt, "input_prompt", ""),
+                "output_text": output_text,
+            }
+
+
 def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     if not run_dir:
         return
@@ -113,6 +182,14 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     # versions are only accepted updates.
     _write_jsonl(root / "filter_versions.jsonl", getattr(result, "filter_versions", []))
 
+    population_payloads = [
+        _prompt_payload(prompt, rank)
+        for rank, prompt in enumerate(getattr(result, "population", []) or [], start=1)
+    ]
+    _write_jsonl(root / "individuals.jsonl", population_payloads)
+    _write_jsonl(root / "outputs.jsonl", _output_rows(getattr(result, "population", []) or []))
+    _write_final_population_csv(root / "final_population.csv", getattr(result, "population", []) or [])
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run prompt Evolution Strategy.")
@@ -132,7 +209,8 @@ def parse_args():
     parser.add_argument("--dry-run", action="store_true", help="Run without an LLM server or heavy ML dependencies")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--history-csv", default="outputs/es_history.csv")
-    parser.add_argument("--selection-mode", choices=["scalar", "lexicographic"], default="scalar")
+    parser.add_argument("--selection-mode", "--selection", dest="selection_mode", choices=["scalar", "lexicographic"], default="scalar")
+    parser.add_argument("--mr-objective", choices=["minimize", "maximize"], default="minimize", help="How MR is optimized after ASV: minimize for behavioral deviation, maximize for semantic preservation")
     parser.add_argument("--filter-update-every", type=int, default=0, help="Update the defensive filter every N generations; 0 disables coevolution")
     parser.add_argument("--top-k-filter", type=int, default=5, help="Number of top prompts used to update the filter")
     parser.add_argument("--benign-csv", default=None, help="CSV of benign prompts used to check false-positive refusal")
@@ -160,6 +238,7 @@ def main():
         random_seed=args.seed,
         lightweight=args.dry_run,
         selection_mode=args.selection_mode,
+        mr_objective=args.mr_objective,
         filter_update_every=args.filter_update_every,
         top_k_filter=args.top_k_filter,
         benign_csv_path=args.benign_csv,

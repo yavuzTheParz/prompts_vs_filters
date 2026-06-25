@@ -36,37 +36,42 @@ def main():
     rows = []
     for variant in ("one_fifth", "self_adaptive"):
         for selection in ("scalar", "lexicographic"):
-            for coevolved in ([False, True] if args.with_filter_coevolution else [False]):
-                for seed in seeds:
-                    config = ESConfig(
-                        lambda_=args.lambda_,
-                        mu=args.mu,
-                        generations=args.generations,
-                        variant=variant,
-                        csv_path=args.csv,
-                        random_seed=seed,
-                        lightweight=True,
-                        selection_mode=selection,
-                        filter_update_every=1 if coevolved else 0,
-                        verbose=False,
-                    )
-                    result = evolutionary_strategy_run(
-                        config=config,
-                        client=None,
-                        filter_prompt=DEFAULT_FILTER_PROMPT,
-                    )
-                    rows.append(
-                        {
-                            "variant": variant,
-                            "selection": selection,
-                            "coevolved_filter": coevolved,
-                            "seed": seed,
-                            "best_fitness": result.best.fitness,
-                            "best_asv": result.best.metrics.get("asv", 0.0),
-                            "best_mr": result.best.metrics.get("mr", 0.0),
-                            "runtime_sec": result.runtime_sec,
-                        }
-                    )
+            for mr_objective in ("minimize", "maximize"):
+                for coevolved in ([False, True] if args.with_filter_coevolution else [False]):
+                    for seed in seeds:
+                        config = ESConfig(
+                            lambda_=args.lambda_,
+                            mu=args.mu,
+                            generations=args.generations,
+                            variant=variant,
+                            csv_path=args.csv,
+                            random_seed=seed,
+                            lightweight=True,
+                            selection_mode=selection,
+                            mr_objective=mr_objective,
+                            filter_update_every=1 if coevolved else 0,
+                            verbose=False,
+                        )
+                        result = evolutionary_strategy_run(
+                            config=config,
+                            client=None,
+                            filter_prompt=DEFAULT_FILTER_PROMPT,
+                        )
+                        rows.append(
+                            {
+                                "variant": variant,
+                                "selection": selection,
+                                "mr_objective": mr_objective,
+                                "coevolved_filter": coevolved,
+                                "seed": seed,
+                                "best_fitness": result.best.fitness,
+                                "best_asv": result.best.metrics.get("asv", 0.0),
+                                "best_mr": result.best.metrics.get("mr", 0.0),
+                                "best_behavioral_deviation": result.best.metrics.get("behavioral_deviation", 0.0),
+                                "best_mr_component": result.best.metrics.get("mr_component", 0.0),
+                                "runtime_sec": result.runtime_sec,
+                            }
+                        )
 
     output_path = output_dir / "ablation_summary.csv"
     with output_path.open("w", newline="", encoding="utf-8") as f:

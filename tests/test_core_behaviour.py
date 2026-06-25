@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+import tempfile
 import unittest
 
 from Prompt_class import Content, Prompt, Structure
 from evolutionary_strategy import ESConfig, evolutionary_strategy_run, load_prompt_population
 from filter_evolution import evolve_filter
 from fitfunc import evaluate_fitness
+from run_es import write_run_dir
 from selection import sort_population
 
 
@@ -41,6 +45,16 @@ class CoreBehaviourTests(unittest.TestCase):
         higher_mr = Prompt(input_prompt="b", fitness=0.1, metrics={"asv": 0.7, "mr": 0.8})
         ordered = sort_population([lower_mr, higher_mr], mode="lexicographic")
         self.assertIs(ordered[0], lower_mr)
+
+    def test_lexicographic_order_can_maximize_mr_as_tiebreaker(self):
+        lower_mr = Prompt(input_prompt="a", fitness=0.9, metrics={"asv": 0.7, "mr": 0.2})
+        higher_mr = Prompt(input_prompt="b", fitness=0.1, metrics={"asv": 0.7, "mr": 0.8})
+        ordered = sort_population(
+            [lower_mr, higher_mr],
+            mode="lexicographic",
+            mr_objective="maximize",
+        )
+        self.assertIs(ordered[0], higher_mr)
 
     def test_evaluate_fitness_updates_all_prompts_and_metrics(self):
         prompts = [
@@ -133,6 +147,57 @@ class CoreBehaviourTests(unittest.TestCase):
         self.assertEqual(len(result.filter_versions), 2)
         self.assertIn("override framing", result.filter_prompt)
         self.assertIn("filter_new_attack_refusal_rate", result.history[0])
+        self.assertIn("best_behavioral_deviation", result.history[0])
+        self.assertGreater(result.history[0]["best_behavioral_deviation"], 0.0)
+
+    def test_run_dir_writes_filter_and_population_artifacts(self):
+        initial_population = [
+            Prompt(
+                input_prompt="unsafe request",
+                structure=Structure.question_request,
+                content=Content.bomb_weapons,
+            ),
+            Prompt(
+                input_prompt="unsafe request",
+                structure=Structure.imperative_instruction,
+                content=Content.bomb_weapons,
+            ),
+        ]
+        config = ESConfig(
+            lambda_=2,
+            mu=2,
+            generations=1,
+            lightweight=True,
+            selection_mode="lexicographic",
+            filter_update_every=1,
+            top_k_filter=1,
+            random_seed=5,
+            verbose=False,
+        )
+        result = evolutionary_strategy_run(
+            config=config,
+            client=FakeFilterClient(),
+            initial_population=initial_population,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            args = SimpleNamespace(model="local-test", api_key=None)
+            write_run_dir(str(run_dir), args, config, result)
+
+            expected_files = {
+                "config.json",
+                "generation_summary.csv",
+                "filter_events.jsonl",
+                "filter_versions.jsonl",
+                "final_filter_prompt.txt",
+                "individuals.jsonl",
+                "outputs.jsonl",
+                "final_population.csv",
+            }
+            self.assertTrue(expected_files.issubset({p.name for p in run_dir.iterdir()}))
+            self.assertIn("override framing", (run_dir / "filter_versions.jsonl").read_text(encoding="utf-8"))
+            self.assertIn("behavioral_deviation", (run_dir / "final_population.csv").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

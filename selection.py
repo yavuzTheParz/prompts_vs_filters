@@ -3,8 +3,6 @@ from __future__ import annotations
 import math
 from typing import Iterable, List, Tuple
 
-import numpy as np
-
 from Prompt_class import Prompt
 
 
@@ -28,15 +26,27 @@ def scalar_key(p: Prompt) -> float:
     return _flt(getattr(p, "fitness", 0.0))
 
 
-def lexicographic_key(p: Prompt) -> Tuple[float, float]:
+def _normalize_mr_objective(mr_objective: str) -> str:
+    objective = (mr_objective or "minimize").strip().lower()
+    if objective in {"min", "minimize", "deviation", "behavioral_deviation"}:
+        return "minimize"
+    if objective in {"max", "maximize", "preserve", "semantic_preservation"}:
+        return "maximize"
+    raise ValueError("mr_objective must be either 'minimize' or 'maximize'")
+
+
+def lexicographic_key(p: Prompt, mr_objective: str = "minimize") -> Tuple[float, float]:
     """
     Proposal-aligned objective ordering.
 
-    ASV is maximized. MR is a similarity-to-direct-output metric, so lower MR means
-    stronger behavioral deviation. The second key therefore maximizes 1 - MR.
+    ASV is always maximized. MR can be interpreted in two ways:
+    - mr_objective="minimize": prefer lower MR by maximizing 1 - MR.
+    - mr_objective="maximize": prefer higher MR directly.
     """
     asv = get_metric(p, "asv")
     mr = get_metric(p, "mr")
+    if _normalize_mr_objective(mr_objective) == "maximize":
+        return (asv, mr)
     return (asv, 1.0 - mr)
 
 
@@ -75,6 +85,8 @@ def ranking_evaluation(gas: dict, fit_array: np.ndarray) -> np.ndarray:
         - step_mr
     """
 
+    import numpy as np
+
     fit_array = np.asarray(fit_array, dtype=float).copy()
     if fit_array.size == 0:
         return fit_array
@@ -83,6 +95,7 @@ def ranking_evaluation(gas: dict, fit_array: np.ndarray) -> np.ndarray:
 
     step_asv = gas["ranking"].get("step_asv", 0.05)
     step_mr = gas["ranking"].get("step_mr", 0.05)
+    mr_objective = _normalize_mr_objective(gas["ranking"].get("mr_objective", "minimize"))
 
     # ------------------------------------------------------------
     # 1. Modulo arithmetic partitioning
@@ -106,15 +119,13 @@ def ranking_evaluation(gas: dict, fit_array: np.ndarray) -> np.ndarray:
     # ------------------------------------------------------------
     # np.lexsort uses the LAST key as the primary key.
     #
-    # ASV is maximized, MR is minimized:
+    # ASV is maximized. MR direction depends on mr_objective:
     #
-    #   primary:   -ASV_partition
-    #   secondary:  MR_partition
-    #
-    # This means:
-    #   max ASV partition first,
-    #   then min MR partition.
-    sort_tuple_initial = (f_mr_mod, -f_asv_mod)
+    #   primary: -ASV_partition
+    #   secondary minimize mode:  MR_partition
+    #   secondary maximize mode: -MR_partition
+    mr_sort_initial = -f_mr_mod if mr_objective == "maximize" else f_mr_mod
+    sort_tuple_initial = (mr_sort_initial, -f_asv_mod)
     initial_order = np.lexsort(sort_tuple_initial)
     fit_array = fit_array[initial_order]
 
@@ -140,7 +151,7 @@ def ranking_evaluation(gas: dict, fit_array: np.ndarray) -> np.ndarray:
     #
     # priority:
     #   1. max raw ASV
-    #   2. min raw MR
+    #   2. MR according to mr_objective
     start = 0
 
     for i in range(fit_array.shape[0]):
@@ -151,7 +162,8 @@ def ranking_evaluation(gas: dict, fit_array: np.ndarray) -> np.ndarray:
             b_asv_raw = block[:, idx["asv"]]
             b_mr_raw = block[:, idx["mr"]]
 
-            block_order = np.lexsort((b_mr_raw, -b_asv_raw))
+            b_mr_sort = -b_mr_raw if mr_objective == "maximize" else b_mr_raw
+            block_order = np.lexsort((b_mr_sort, -b_asv_raw))
             fit_array[start:stop] = block[block_order]
 
             start = stop
@@ -163,7 +175,8 @@ def ranking_evaluation(gas: dict, fit_array: np.ndarray) -> np.ndarray:
         b_asv_raw = block[:, idx["asv"]]
         b_mr_raw = block[:, idx["mr"]]
 
-        block_order = np.lexsort((b_mr_raw, -b_asv_raw))
+        b_mr_sort = -b_mr_raw if mr_objective == "maximize" else b_mr_raw
+        block_order = np.lexsort((b_mr_sort, -b_asv_raw))
         fit_array[start:] = block[block_order]
 
     # ------------------------------------------------------------
@@ -189,6 +202,7 @@ def ranking_evaluation(gas: dict, fit_array: np.ndarray) -> np.ndarray:
     )
 
     gas["ranking"]["maxASVPartition"] = float(first_asv_mod_val)
+    gas["ranking"]["mrObjective"] = mr_objective
     gas["ranking"]["minMRPartition"] = float(first_mr_mod_val)
     # Backward-compatible field name. In proposal-aligned ranking this is the MR
     # partition of the best lexicographic block, not a maximum objective.
@@ -205,6 +219,7 @@ def sort_population_rank_partitioning(
     population: Iterable[Prompt],
     step_asv: float = 0.05,
     step_mr: float = 0.05,
+    mr_objective: str = "minimize",
 ) -> Tuple[List[Prompt], dict]:
     """
     Sorts Prompt population using ASV-first rank partitioning.
@@ -214,6 +229,17 @@ def sort_population_rank_partitioning(
         p.metrics["mr"]
     """
 
+    try:
+        import numpy as np
+    except ModuleNotFoundError:
+        return sorted(
+            list(population),
+            key=lambda prompt: lexicographic_key(prompt, mr_objective=mr_objective),
+            reverse=True,
+        ), {
+            "fallback": "lexicographic_without_numpy"
+        }
+
     population = list(population)
     if not population:
         return [], {}
@@ -222,6 +248,7 @@ def sort_population_rank_partitioning(
         "ranking": {
             "step_asv": step_asv,
             "step_mr": step_mr,
+            "mr_objective": _normalize_mr_objective(mr_objective),
         },
         "fitIdx": {
             "originalIndex": 0,
@@ -272,6 +299,7 @@ def sort_population(
     mode: str = "scalar",
     step_asv: float = 0.05,
     step_mr: float = 0.05,
+    mr_objective: str = "minimize",
 ) -> List[Prompt]:
     """
     Compatible with existing evolutionary strategy selection modes.
@@ -293,6 +321,7 @@ def sort_population(
             population,
             step_asv=step_asv,
             step_mr=step_mr,
+            mr_objective=mr_objective,
         )[0]
 
     raise ValueError(
