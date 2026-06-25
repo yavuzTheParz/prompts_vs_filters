@@ -182,6 +182,7 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     # versions are only accepted updates.
     _write_jsonl(root / "filter_versions.jsonl", getattr(result, "filter_versions", []))
 
+<<<<<<< HEAD
     population_payloads = [
         _prompt_payload(prompt, rank)
         for rank, prompt in enumerate(getattr(result, "population", []) or [], start=1)
@@ -189,6 +190,10 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     _write_jsonl(root / "individuals.jsonl", population_payloads)
     _write_jsonl(root / "outputs.jsonl", _output_rows(getattr(result, "population", []) or []))
     _write_final_population_csv(root / "final_population.csv", getattr(result, "population", []) or [])
+=======
+    # Raw sampled model outputs for the final selected population.
+    _write_jsonl(root / "outputs.jsonl", _final_population_output_rows(result))
+>>>>>>> e851a2023b3315cd3b7fd0d8a2e28bb4b222e49a
 
 
 def parse_args():
@@ -215,6 +220,7 @@ def parse_args():
     parser.add_argument("--top-k-filter", type=int, default=5, help="Number of top prompts used to update the filter")
     parser.add_argument("--benign-csv", default=None, help="CSV of benign prompts used to check false-positive refusal")
     parser.add_argument("--max-filter-chars", type=int, default=4000, help="Reject candidate filters longer than this limit")
+    parser.add_argument("--k-evals", type=int, default=1, help="Number of stochastic filtered responses sampled per prompt")
     parser.add_argument("--run-dir", default=None, help="Optional directory for config, history, and filter artifacts")
     parser.add_argument("--quiet", action="store_true")
     return parser.parse_args()
@@ -222,6 +228,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    os.environ["PROMPTS_VS_FILTERS_K_EVALS"] = str(max(1, int(args.k_evals or 1)))
     client = build_client(args)
 
     config = ESConfig(
@@ -262,6 +269,7 @@ def main():
     print(f"Final filter length: {len(result.filter_prompt)} chars")
     print(f"Filter update attempts: {len(getattr(result, 'filter_events', []))}")
     print(f"Accepted filter versions: {max(0, len(getattr(result, 'filter_versions', [])) - 1)}")
+    print(f"K evaluations per prompt: {max(1, int(args.k_evals or 1))}")
     if args.history_csv:
         print(f"History written to: {args.history_csv}")
     if args.run_dir:

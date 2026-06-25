@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import List
+import os
+from typing import List, Optional
 
 from llm_client import LocalLLMClient
 
@@ -48,20 +49,35 @@ def _generate(client, prompt: str, model_name: str, temperature: float = 0.7) ->
     return response.choices[0].message.content.strip()
 
 
+def _resolve_k_evals(k_evals: Optional[int]) -> int:
+    if k_evals is None:
+        raw = os.getenv("PROMPTS_VS_FILTERS_K_EVALS", "1")
+    else:
+        raw = k_evals
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 1
+
+
 def assign_outputs(
     filter_prompt: str,
     prompts: List["Prompt"],
     client,
     model_name: str = "local-qwen",
     generate_direct: bool = True,
+    k_evals: Optional[int] = None,
 ) -> None:
     """
     Populate Prompt.output_prompts using the current filter prompt.
 
-    The fitness function also needs Prompt.direct_output. When generate_direct=True,
-    direct_output is generated once per prompt without the defensive filter context.
-    This keeps ASV/MR fitness executable without requiring separate preprocessing.
+    The fitness function averages over Prompt.output_prompts, so k_evals controls
+    how many stochastic filtered responses are collected per prompt. Direct output
+    is generated once per prompt without the defensive filter context and reused as
+    the MR baseline.
     """
+    k_evals = _resolve_k_evals(k_evals)
+
     for prompt_obj in prompts:
         try:
             if generate_direct and not getattr(prompt_obj, "direct_output", ""):
@@ -75,13 +91,17 @@ def assign_outputs(
                 f"User:\n{prompt_obj.input_prompt}\n\n"
                 f"Assistant:"
             )
-            assistant_message = _generate(
-                client, combined_prompt, model_name=model_name, temperature=0.7
-            )
-            prompt_obj.output_prompts.append(assistant_message)
+            while len(getattr(prompt_obj, "output_prompts", []) or []) < k_evals:
+                assistant_message = _generate(
+                    client, combined_prompt, model_name=model_name, temperature=0.7
+                )
+                prompt_obj.output_prompts.append(assistant_message)
 
         except Exception as e:
             print(f"   [API ERROR]: {e}")
             if not getattr(prompt_obj, "direct_output", ""):
                 prompt_obj.direct_output = "Error: Could not fetch direct response."
-            prompt_obj.output_prompts.append("Error: Could not fetch response.")
+            if not getattr(prompt_obj, "output_prompts", None):
+                prompt_obj.output_prompts = []
+            while len(prompt_obj.output_prompts) < k_evals:
+                prompt_obj.output_prompts.append("Error: Could not fetch response.")

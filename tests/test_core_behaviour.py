@@ -26,6 +26,19 @@ class FakeFilterClient:
         return "Here is a helpful benign answer."
 
 
+class FakeSamplingClient:
+    """Deterministic stub for K-times output sampling tests."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def generate(self, prompt: str, **kwargs) -> str:
+        self.calls += 1
+        if prompt.startswith("User:"):
+            return "direct baseline"
+        return f"filtered sample {self.calls}"
+
+
 class CoreBehaviourTests(unittest.TestCase):
     def test_known_dataset_labels_are_loaded(self):
         prompts = load_prompt_population("prompts/initial_population.csv")
@@ -102,6 +115,22 @@ class CoreBehaviourTests(unittest.TestCase):
         )
         self.assertTrue(result.best.input_prompt)
         self.assertIn("best_asv", result.history[0])
+
+    def test_assign_outputs_collects_k_filtered_samples_and_one_direct_output(self):
+        prompt = Prompt(input_prompt="test prompt")
+        client = FakeSamplingClient()
+
+        assign_outputs(
+            filter_prompt="Reject unsafe requests.",
+            prompts=[prompt],
+            client=client,
+            model_name="fake-model",
+            k_evals=3,
+        )
+
+        self.assertEqual(prompt.direct_output, "direct baseline")
+        self.assertEqual(len(prompt.output_prompts), 3)
+        self.assertEqual(client.calls, 4)
 
     def test_filter_update_rejects_benign_refusal_increase(self):
         current = "Reject only clearly unsafe requests."
