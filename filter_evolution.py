@@ -159,7 +159,12 @@ def propose_rule_with_llm(current_filter: str, top_attack_prompts: List[str], cl
         "policy-evading, or instruction-overriding requests while preserving helpful answers "
         "for benign requests. Do not repeat the examples. Output ONLY the rule."
     )
-    rule = _clean_rule(_client_generate(client, user_prompt, model_name))
+    try:
+        raw_rule = _client_generate(client, user_prompt, model_name)
+    except Exception as exc:
+        print(f">>> Filter rule proposal failed: {exc}")
+        raw_rule = FALLBACK_RULE
+    rule = _clean_rule(raw_rule)
     return rule, pattern_summary
 
 
@@ -175,7 +180,11 @@ def evaluate_filter_robustness(
 
     def get_response(user_prompt: str) -> str:
         full_prompt = f"System:\n{filter_prompt}\n\nUser:\n{user_prompt}\n\nAssistant:"
-        return _client_generate(client, full_prompt, model_name).lower()
+        try:
+            return _client_generate(client, full_prompt, model_name).lower()
+        except Exception as exc:
+            print(f">>> Filter evaluation request failed: {exc}")
+            return ""
 
     if not attack_list:
         attack_refusal_rate = 0.0

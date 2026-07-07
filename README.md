@@ -137,6 +137,30 @@ If `--benign-csv` is omitted, a small built-in benign sanity set is used. For re
 
 When `--run-dir` is set, the run directory stores `config.json`, `generation_summary.csv`, `filter_events.jsonl`, `filter_versions.jsonl`, `final_filter_prompt.txt`, `individuals.jsonl`, `outputs.jsonl`, and `final_population.csv`.
 
+Local LLM filter-evolution integration test:
+
+```bash
+set FILTER_EVOLUTION_TEST_BASE_URL=http://127.0.0.1:8000
+set FILTER_EVOLUTION_TEST_MODEL=dphn/Dolphin3.0-Llama3.1-8B
+python -B -m unittest tests.test_filter_evolution_local_llm -v
+```
+
+Optional variables: `FILTER_EVOLUTION_TEST_API_KEY`, `FILTER_EVOLUTION_TEST_TIMEOUT`, and `FILTER_EVOLUTION_TEST_REQUIRE_ACCEPT=1`.
+
+Full validation harness:
+
+```bash
+python -B tests/run_full_validation.py --generations 3 --mu 2 --lambda 4
+```
+
+This runs all `unittest` tests, then a short dry-run CMA-ES experiment with lexicographic selection and filter coevolution enabled. It writes the combined output to `outputs/full_validation_report.txt` and the experiment history to `outputs/full_validation_experiment_history.csv`.
+
+To run the same harness against a local LLM-backed experiment:
+
+```bash
+python -B tests/run_full_validation.py --real-llm --base-url http://127.0.0.1:8000 --generations 3
+```
+
 ## Output
 
 `run_es.py` prints the final best prompt and writes convergence/history data to:

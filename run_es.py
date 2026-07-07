@@ -65,6 +65,7 @@ def write_history_csv(path: str, history):
         "best_diversity",
         "best_length_penalty",
         "best_repetition_penalty",
+        "best_api_error",
         "filter_attempted",
         "filter_changed",
         "filter_length",

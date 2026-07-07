@@ -332,7 +332,7 @@ def _mutate_prompt(
 
 
 def _heavy_mutate_text(text, style, template_manager, style_manager, tokenizer, bert_model):
-    if template_manager is None or style_manager is None or tokenizer is None or bert_model is None:
+    if template_manager is None:
         raise RuntimeError("Heavy mutation requested without initialized mutation objects")
     from mutation_manager import hybrid_mutate_optimized
     return hybrid_mutate_optimized(text, style, template_manager, style_manager, tokenizer, bert_model)
@@ -443,6 +443,7 @@ def _history_metrics(
         "best_diversity": _metric(best, "diversity"),
         "best_length_penalty": _metric(best, "length_penalty"),
         "best_repetition_penalty": _metric(best, "repetition_penalty"),
+        "best_api_error": _metric(best, "api_error"),
     }
 
 
@@ -549,14 +550,24 @@ def _maybe_evolve_filter(
 
 
 def _load_heavy_mutation_objects():
-    from transformers import BertForMaskedLM, BertTokenizer
     from mutation_manager import StyleManager, TemplateManager
+
+    template_manager = TemplateManager()
+    try:
+        from transformers import BertForMaskedLM, BertTokenizer
+    except Exception as exc:
+        print(f">> Heavy token mutation unavailable ({exc}); using structural mutation fallback.")
+        return template_manager, None, None, None
 
     tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
     bert_model = BertForMaskedLM.from_pretrained("bert-base-uncased")
     bert_model.eval()
-    style_manager = StyleManager()
-    template_manager = TemplateManager()
+    try:
+        style_manager = StyleManager()
+    except Exception as exc:
+        print(f">> Style embedding mutation unavailable ({exc}); using structural mutation fallback.")
+        return template_manager, None, tokenizer, bert_model
+
     return template_manager, style_manager, tokenizer, bert_model
 
 

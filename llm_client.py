@@ -1,7 +1,13 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
-import requests
+import json
+from urllib import error, request
+
+try:
+    import requests
+except Exception:
+    requests = None
 
 @dataclass
 class LocalLLMClient:
@@ -30,6 +36,16 @@ class LocalLLMClient:
             "do_sample": do_sample,
         }
 
-        r = requests.post(url, json=payload, headers=headers, timeout=self.timeout_sec)
-        r.raise_for_status()
-        return r.json()
+        if requests is not None:
+            r = requests.post(url, json=payload, headers=headers, timeout=self.timeout_sec)
+            r.raise_for_status()
+            return r.json()
+
+        data = json.dumps(payload).encode("utf-8")
+        req = request.Request(url, data=data, headers=headers, method="POST")
+        try:
+            with request.urlopen(req, timeout=self.timeout_sec) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Local LLM request failed with HTTP {exc.code}: {body}") from exc

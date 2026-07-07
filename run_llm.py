@@ -116,10 +116,9 @@ def assign_outputs(
 
         except Exception as e:
             print(f"   [API ERROR]: {e}")
+            prompt_obj.metadata["api_error"] = str(e)
+            prompt_obj.metadata["valid_llm_response"] = False
             if not getattr(prompt_obj, "direct_output", ""):
-                prompt_obj.direct_output = "Error: Could not fetch direct response."
+                prompt_obj.direct_output = ""
             if not getattr(prompt_obj, "output_prompts", None):
                 prompt_obj.output_prompts = []
-            # Fill remaining slots with error placeholders so k_evals count is met
-            while len(prompt_obj.output_prompts) < k:
-                prompt_obj.output_prompts.append("Error: Could not fetch response.")

@@ -5,11 +5,31 @@ import random
 import re
 from typing import List, Optional, Tuple
 
-import numpy as np
-import torch
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
-from transformers import BertForMaskedLM, BertTokenizer
+try:
+    import numpy as np
+except Exception:
+    np = None
+
+try:
+    import torch
+except Exception:
+    torch = None
+
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception:
+    SentenceTransformer = None
+
+try:
+    from sklearn.metrics.pairwise import cosine_similarity
+except Exception:
+    cosine_similarity = None
+
+try:
+    from transformers import BertForMaskedLM, BertTokenizer
+except Exception:
+    BertForMaskedLM = None
+    BertTokenizer = None
 
 try:
     import spacy
@@ -64,6 +84,11 @@ class TemplateManager:
 
 class StyleManager:
     def __init__(self, encoder_name: str = "all-MiniLM-L6-v2"):
+        if SentenceTransformer is None or np is None:
+            raise ImportError(
+                "StyleManager requires numpy and sentence-transformers. "
+                "Install project ML dependencies or use structural mutation only."
+            )
         print(">> StyleManager: embedding model loading...")
         self.encoder = SentenceTransformer(encoder_name)
         self.style_vectors = {}
@@ -71,6 +96,8 @@ class StyleManager:
         print(">> StyleManager: ready.")
 
     def _get_vec(self, pos: List[str], neu: List[str]):
+        if np is None:
+            raise ImportError("Style vector computation requires numpy.")
         p = self.encoder.encode(pos)
         n = self.encoder.encode(neu)
         vec = np.mean(p, axis=0) - np.mean(n, axis=0)
@@ -152,6 +179,9 @@ def hybrid_mutate_optimized(
     if random.random() < 0.60:
         return template_mgr.apply_structural_mutation(prompt_text, style), "STRUCTURAL"
 
+    if torch is None or np is None or cosine_similarity is None or tokenizer is None or model is None or style_mgr is None:
+        return template_mgr.apply_structural_mutation(prompt_text, style), "STRUCTURAL_DEPENDENCY_FALLBACK"
+
     original_word, word_idx, pos_tag = _choose_target_token(prompt_text)
     if not original_word or word_idx is None:
         return template_mgr.apply_structural_mutation(prompt_text, style), "STRUCTURAL_FALLBACK"
@@ -206,6 +236,8 @@ def hybrid_mutate_optimized(
 
 
 if __name__ == "__main__":
+    if BertTokenizer is None or BertForMaskedLM is None:
+        raise ImportError("The mutation demo requires transformers.")
     tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
     model = BertForMaskedLM.from_pretrained("bert-base-uncased")
     model.eval()

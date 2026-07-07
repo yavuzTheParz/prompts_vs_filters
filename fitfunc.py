@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+import re
+from collections import Counter
 from typing import Dict, List
 
 from Prompt_class import Content, Prompt
@@ -82,6 +85,7 @@ def _base_metrics(prompt: Prompt, asv: float = 0.0, mr: float = 0.0) -> Dict[str
         "diversity": 0.0,
         "length_penalty": _length_penalty(prompt.input_prompt),
         "repetition_penalty": _repetition_penalty(prompt.input_prompt),
+        "api_error": 1.0 if (getattr(prompt, "metadata", {}) or {}).get("api_error") else 0.0,
     }
 
 
@@ -125,6 +129,19 @@ def _set_metrics_and_fitness(
 def callFitness(population: List[Prompt], mr_objective: str = "minimize"):
     ref_outputs = [reference_for_prompt(p) for p in population]
     direct_outputs = [getattr(p, "direct_output", "") or "" for p in population]
+    if SentenceTransformer is None or util is None:
+        print(">> SBERT unavailable; using lexical fallback fitness.")
+        return evaluate_fitness(
+            prompts=population,
+            ref_outputs=ref_outputs,
+            direct_outputs=direct_outputs,
+            embed_func=embed_lexical,
+            sim_func=sim_lexical,
+            alpha=0.7,
+            beta=0.3,
+            mr_objective=mr_objective,
+        )
+
     evaluate_fitness(
         prompts=population,
         ref_outputs=ref_outputs,
@@ -171,10 +188,23 @@ def evaluate_fitness(
         ref_text = ref_outputs[i] or ""
         direct_text = direct_outputs[i] or ""
 
+        if (getattr(p, "metadata", {}) or {}).get("api_error"):
+            p.fitness = 0.0
+            p.metrics = _base_metrics(p)
+            print(f"[{i}] API error during output assignment - fitness=0.000")
+            continue
+
         if not getattr(p, "output_prompts", None):
             p.fitness = 0.0
             p.metrics = _base_metrics(p)
             print(f"[{i}] No output prompts - fitness=0.000")
+            continue
+
+        if not direct_text:
+            p.fitness = 0.0
+            p.metrics = _base_metrics(p)
+            p.metrics["api_error"] = 1.0
+            print(f"[{i}] Missing direct output - fitness=0.000")
             continue
 
         try:
@@ -288,3 +318,20 @@ def sim_func(emb_a, emb_b) -> float:
         raise ImportError("sentence-transformers is required for cosine similarity")
     cos = util.cos_sim(emb_a, emb_b).item()
     return (cos + 1.0) / 2.0
+
+
+def embed_lexical(text: str) -> Counter:
+    tokens = re.findall(r"[a-z0-9]+", str(text or "").lower())
+    return Counter(tokens)
+
+
+def sim_lexical(emb_a: Counter, emb_b: Counter) -> float:
+    if not emb_a or not emb_b:
+        return 0.0
+    shared = set(emb_a) & set(emb_b)
+    numerator = sum(emb_a[token] * emb_b[token] for token in shared)
+    norm_a = math.sqrt(sum(value * value for value in emb_a.values()))
+    norm_b = math.sqrt(sum(value * value for value in emb_b.values()))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return max(0.0, min(1.0, numerator / (norm_a * norm_b)))
