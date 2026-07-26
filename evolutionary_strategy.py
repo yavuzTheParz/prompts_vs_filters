@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import ast
 import csv
+import hashlib
 import math
 import random
+import statistics
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -79,6 +81,7 @@ class ESRunResult:
     filter_events: List[Dict[str, Any]] = field(default_factory=list)
     filter_versions: List[Dict[str, Any]] = field(default_factory=list)
     sample_records: List[Dict[str, Any]] = field(default_factory=list)
+    lineage_records: List[Dict[str, Any]] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------
@@ -558,7 +561,7 @@ def _history_metrics(
         reason = str((prompt.metrics or {}).get("validity_reason", "valid"))
         if reason != "valid":
             rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
-    return {
+    row = {
         "generation": float(generation),
         "best_fitness": float(best.fitness),
         "mean_parent_fitness": float(mean_parent_fitness),
@@ -595,6 +598,31 @@ def _history_metrics(
             rejection_counts.get("near_duplicate", 0)
         ),
     }
+    metric_names = (
+        "fitness",
+        "attack_objective",
+        "attack_compliance_score",
+        "unsafe_reference_similarity",
+        "mr",
+        "behavioral_deviation",
+        "diversity",
+        "length_penalty",
+        "repetition_penalty",
+    )
+    for name in metric_names:
+        values = [
+            float(prompt.fitness if name == "fitness" else _metric(prompt, name))
+            for prompt in parents
+        ]
+        row[f"mean_{name}"] = sum(values) / len(values)
+        row[f"median_{name}"] = statistics.median(values)
+        row[f"std_{name}"] = statistics.pstdev(values) if len(values) > 1 else 0.0
+    return row
+
+
+def _stable_prompt_id(seed: Optional[int], generation: int, index: int, text: str) -> str:
+    payload = f"{seed}|{generation}|{index}|{text}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:16]
 
 
 def _load_benign_prompts(path: Optional[str]) -> List[str]:
@@ -776,6 +804,27 @@ def evolutionary_strategy_run(
 
     parents = random.sample(source_population, config.mu)
     parents = [_clone_prompt(p, keep_outputs=False) for p in parents]
+    lineage_records: List[Dict[str, Any]] = []
+    for index, parent in enumerate(parents):
+        prompt_id = _stable_prompt_id(config.random_seed, 0, index, parent.input_prompt)
+        parent.metadata.update(
+            {
+                "prompt_id": prompt_id,
+                "parent_id": None,
+                "seed_prompt_id": prompt_id,
+                "generation": 0,
+                "mutation_lineage": [],
+            }
+        )
+        lineage_records.append(
+            {
+                "prompt_id": prompt_id,
+                "parent_id": None,
+                "seed_prompt_id": prompt_id,
+                "generation": 0,
+                "mutation_operator": "seed",
+            }
+        )
 
     start = time.time()
     sample_records: List[Dict[str, Any]] = []
@@ -821,6 +870,7 @@ def evolutionary_strategy_run(
         offspring_parent_indices: List[int] = []
         offspring_sigmas: List[float] = []
         offspring_cma_vectors: List[List[float]] = []
+        operator_attempts = operator_acceptances = operator_fallbacks = 0
 
         if variant == "self_adaptive":
             dim = 1.0
@@ -873,6 +923,40 @@ def evolutionary_strategy_run(
                     template_manager, style_manager, tokenizer, bert_model,
                 )
 
+            child_id = _stable_prompt_id(
+                config.random_seed,
+                generation,
+                len(offspring),
+                child.input_prompt,
+            )
+            parent_id = parent.metadata.get("prompt_id")
+            child.metadata.update(
+                {
+                    "prompt_id": child_id,
+                    "parent_id": parent_id,
+                    "seed_prompt_id": parent.metadata.get("seed_prompt_id", parent_id),
+                    "generation": generation,
+                    "mutation_operator": list(_logs),
+                    "mutation_lineage": list(
+                        parent.metadata.get("mutation_lineage", [])
+                    )
+                    + list(_logs),
+                }
+            )
+            lineage_records.append(
+                {
+                    "prompt_id": child_id,
+                    "parent_id": parent_id,
+                    "seed_prompt_id": child.metadata["seed_prompt_id"],
+                    "generation": generation,
+                    "mutation_operator": list(_logs),
+                }
+            )
+            operator_attempts += len(_logs)
+            operator_acceptances += sum(
+                "REJECT" not in log and "NO_" not in log for log in _logs
+            )
+            operator_fallbacks += sum("FALLBACK" in log for log in _logs)
             offspring.append(child)
             offspring_parent_indices.append(parent_idx)
 
@@ -980,6 +1064,18 @@ def evolutionary_strategy_run(
                 best = _clone_prompt(parents[0], keep_outputs=True)
 
         history_row = _history_metrics(generation, best, parents, success_rate, sigma_report)
+        history_row.update(
+            {
+                "operator_attempts": float(operator_attempts),
+                "operator_acceptances": float(operator_acceptances),
+                "operator_success_rate": (
+                    operator_acceptances / operator_attempts
+                    if operator_attempts
+                    else 0.0
+                ),
+                "operator_fallbacks": float(operator_fallbacks),
+            }
+        )
         if variant == "cma_es":
             history_row.update(
                 {
@@ -1013,6 +1109,7 @@ def evolutionary_strategy_run(
         filter_events=filter_events,
         filter_versions=filter_versions,
         sample_records=sample_records,
+        lineage_records=lineage_records,
     )
 
 

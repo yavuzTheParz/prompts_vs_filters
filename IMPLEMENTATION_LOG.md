@@ -371,3 +371,38 @@ python3 -B -m unittest discover -s tests -v
 
 Result: 4 targeted filter-version tests passed; the full suite passed 49 tests
 with 1 opt-in integration test skipped.
+
+## T9 - Expand Logging, Provenance, and Reproducibility
+
+- Status: Complete
+- Date: 2026-07-26
+
+### Changes
+
+- Added mean, median, and population standard deviation for every optimization
+  metric to generation summaries.
+- Added mutation-operator attempt, acceptance, success-rate, and fallback
+  counters.
+- Added stable prompt, parent, seed-prompt, generation, and mutation-lineage
+  identifiers to candidates and exported lineage records.
+- Added a sanitized run manifest containing commit SHA, seed, model metadata,
+  objective/filter modes, and dependency versions.
+- Added an aggregate-only `summary.json` artifact that does not require unsafe
+  raw model output.
+- Added recursive credential-field and known token-pattern redaction for
+  structured configuration and provenance output.
+
+### Validation
+
+```bash
+python3 -B -m unittest tests.test_provenance tests.test_run_es -v
+python3 -B -m unittest discover -s tests -v
+python3 run_es.py --dry-run --mu 2 --lambda 4 --generations 2 --seed 109 \
+  --history-csv /tmp/t9_history.csv --run-dir /tmp/t9_run
+```
+
+Result: 7 targeted provenance/output tests passed; the full suite passed 53
+tests with 1 opt-in local-LLM integration test skipped. The fixed-seed dry-run
+completed and produced configuration, generation summary, filter event/version,
+final filter, output, sample, lineage, manifest, and aggregate summary
+artifacts.

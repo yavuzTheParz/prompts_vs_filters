@@ -206,7 +206,18 @@ labels runs as `fixed_filter` or `coevolution`.
 
 When `--run-dir` is set, the run directory stores `config.json`,
 `generation_summary.csv`, `filter_events.jsonl`, `filter_versions.jsonl`,
-`final_filter_prompt.txt`, `outputs.jsonl`, and `samples.jsonl`.
+`final_filter_prompt.txt`, `outputs.jsonl`, `samples.jsonl`, `lineage.jsonl`,
+`manifest.json`, and `summary.json`.
+
+`generation_summary.csv` reports best, mean, median, and population standard
+deviation for each optimization metric, plus mutation-operator attempts,
+acceptances, success rate, and fallbacks. Final-output and lineage records carry
+stable prompt, parent, seed-prompt, generation, and mutation-lineage IDs.
+`manifest.json` captures the commit SHA, random seed, model endpoint metadata,
+objective/filter modes, and dependency versions. `summary.json` is a compact
+aggregate-only result that does not reproduce raw model outputs. Structured
+configuration and provenance payloads redact credential-shaped fields and
+known API-token patterns.
 
 Local LLM filter-evolution integration test:
 

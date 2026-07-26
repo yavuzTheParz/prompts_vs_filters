@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.metadata
 import json
 import os
+import re
+import subprocess
 from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
@@ -96,6 +99,8 @@ def write_history_csv(path: str, history):
         "filter_old_benign_refusal_rate",
         "filter_new_benign_refusal_rate",
     ]
+    extras = sorted({key for row in history for key in row} - set(fieldnames))
+    fieldnames.extend(extras)
     with output_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -107,6 +112,41 @@ def _safe_asdict(config: ESConfig) -> dict:
     data = asdict(config)
     data["mutation_styles"] = list(config.mutation_styles)
     return data
+
+
+def _sanitize_payload(value):
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            if any(marker in key.lower() for marker in ("api_key", "token", "password", "secret")):
+                sanitized[key] = "[REDACTED]"
+            else:
+                sanitized[key] = _sanitize_payload(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_payload(item) for item in value]
+    if isinstance(value, str) and re.search(r"(gh[opsu]_|sk-)[A-Za-z0-9_-]{16,}", value):
+        return "[REDACTED]"
+    return value
+
+
+def _commit_sha() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
+def _dependency_versions() -> dict:
+    versions = {"python": os.sys.version.split()[0]}
+    for package in ("numpy", "torch", "transformers", "sentence-transformers"):
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            versions[package] = "not-installed"
+    return versions
 
 
 def _write_jsonl(path: Path, rows) -> None:
@@ -136,6 +176,26 @@ def _final_population_output_rows(result):
                             "filter_version", 0
                         )
                     ),
+                    "prompt_id": (getattr(prompt, "metadata", {}) or {}).get(
+                        "prompt_id"
+                    ),
+                    "parent_id": (getattr(prompt, "metadata", {}) or {}).get(
+                        "parent_id"
+                    ),
+                    "seed_prompt_id": (getattr(prompt, "metadata", {}) or {}).get(
+                        "seed_prompt_id"
+                    ),
+                    "generation": int(
+                        (getattr(prompt, "metadata", {}) or {}).get(
+                            "generation", 0
+                        )
+                    ),
+                    "mutation_lineage": list(
+                        (getattr(prompt, "metadata", {}) or {}).get(
+                            "mutation_lineage", []
+                        )
+                    ),
+                    "prompt_length": len(getattr(prompt, "input_prompt", "")),
                     "metrics": metrics,
                     "attack_evaluator": dict(
                         (getattr(prompt, "metadata", {}) or {}).get(
@@ -159,7 +219,7 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     root = Path(run_dir)
     root.mkdir(parents=True, exist_ok=True)
 
-    config_payload = {
+    config_payload = _sanitize_payload({
         "args": {k: v for k, v in vars(args).items() if k != "api_key"},
         "config": _safe_asdict(config),
         "model_name": args.model,
@@ -172,7 +232,7 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
         "filter_mode": (
             "coevolution" if config.filter_update_every > 0 else "fixed_filter"
         ),
-    }
+    })
     (root / "config.json").write_text(
         json.dumps(config_payload, indent=2, ensure_ascii=False),
         encoding="utf-8",
@@ -185,6 +245,35 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     _write_jsonl(root / "filter_versions.jsonl", getattr(result, "filter_versions", []))
     _write_jsonl(root / "outputs.jsonl", _final_population_output_rows(result))
     _write_jsonl(root / "samples.jsonl", getattr(result, "sample_records", []))
+    _write_jsonl(root / "lineage.jsonl", getattr(result, "lineage_records", []))
+    manifest = _sanitize_payload(
+        {
+            "commit_sha": _commit_sha(),
+            "seed": config.random_seed,
+            "model": {
+                "name": args.model,
+                "base_url": getattr(args, "base_url", None),
+            },
+            "mr_objective": config.mr_objective,
+            "filter_mode": config_payload["filter_mode"],
+            "dependencies": _dependency_versions(),
+        }
+    )
+    (root / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    summary = {
+        "best_fitness": float(result.best.fitness),
+        "best_metrics": _sanitize_payload(dict(result.best.metrics or {})),
+        "generations_completed": len(result.history),
+        "filter_versions": len(getattr(result, "filter_versions", [])),
+        "sample_attempts": len(getattr(result, "sample_records", [])),
+    }
+    (root / "summary.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 def parse_args():
