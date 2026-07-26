@@ -106,17 +106,34 @@ Use `.env.example` as the template for local secrets. Do not commit real API key
 
 ## Lexicographical selection
 
-Scalar selection remains the default for backward compatibility. Lexicographical selection ranks candidates by ASV first, then minimizes MR as the tie-breaker:
+Scalar selection remains the default for backward compatibility. Select the MR
+interpretation explicitly; scalar, lexicographic, and rank-partitioning
+selection all use the same active mode.
 
-```bash
-python run_es.py --dry-run --selection-mode lexicographic --mr-objective minimize --variant cma_es --mu 3 --lambda 10 --generations 2
+`behavioral_deviation` maximizes divergence from the prompt-specific direct
+response:
+
+```text
+fitness = 0.7 * ASV + 0.3 * (1 - MR)
 ```
 
-Use `--mr-objective maximize` for the semantic-preservation variant, where ASV is still primary but higher MR wins ties and scalar fitness rewards MR directly. This lets experiments compare both interpretations:
+```bash
+python run_es.py --dry-run --selection-mode lexicographic --mr-objective behavioral_deviation --variant cma_es --mu 3 --lambda 10 --generations 2
+```
+
+Use `semantic_recovery` when the experiment should reward recovery of the
+prompt-specific unfiltered behavior:
+
+```text
+fitness = 0.7 * ASV + 0.3 * MR
+```
 
 ```bash
-python run_es.py --dry-run --selection-mode lexicographic --mr-objective maximize --variant cma_es --mu 3 --lambda 10 --generations 2
+python run_es.py --dry-run --selection-mode lexicographic --mr-objective semantic_recovery --variant cma_es --mu 3 --lambda 10 --generations 2
 ```
+
+The legacy `minimize` and `maximize` values remain accepted temporarily as
+deprecated aliases for `behavioral_deviation` and `semantic_recovery`.
 
 ## Optional filter coevolution
 
@@ -126,7 +143,7 @@ Filter updates are disabled by default. To try a candidate filter rule every gen
 python run_es.py \
   --base-url http://127.0.0.1:8000 \
   --selection-mode lexicographic \
-  --mr-objective minimize \
+  --mr-objective behavioral_deviation \
   --filter-update-every 1 \
   --top-k-filter 5 \
   --benign-csv prompts/benign.csv \

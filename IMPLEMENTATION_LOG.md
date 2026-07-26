@@ -99,3 +99,48 @@ python3 run_es.py --dry-run --variant cma_es --mu 2 --lambda 4 \
 
 Result: completed one generation with best fitness `0.3700`. Temporary
 validation artifacts were kept outside the repository.
+
+## T2 - Formalize MR Objective Modes
+
+- Status: Complete
+- Date: 2026-07-26
+- Canonical modes: `behavioral_deviation`, `semantic_recovery`
+
+### Changes
+
+- Added a shared MR objective definition used by fitness, lexicographic
+  selection, rank partitioning, the ES loop, and the CLI.
+- `behavioral_deviation` uses
+  `fitness = 0.7 * ASV + 0.3 * (1 - MR)`.
+- `semantic_recovery` uses `fitness = 0.7 * ASV + 0.3 * MR`.
+- Preserved legacy objective names as deprecated aliases with explicit
+  warnings.
+- Added the canonical mode, full formula, and scientific definition to
+  `config.json` and every CLI run summary.
+- Updated README examples and the ablation/full-validation helpers to use
+  canonical mode names.
+
+### Validation
+
+Targeted formula, selection, and artifact tests:
+
+```bash
+python3 -B -m unittest \
+  tests.test_fitfunc tests.test_selection tests.test_run_es -v
+```
+
+Result: 6 tests passed.
+
+Full unit-test suite:
+
+```bash
+python3 -B -m unittest discover -s tests -v
+```
+
+Result: 24 tests passed; 1 opt-in local-LLM integration test was skipped because
+no local model endpoint was configured.
+
+Both canonical modes completed a one-generation, fixed-seed dry-run with
+lexicographic selection. Their console summaries and `config.json` files
+recorded the expected mode and formula. Temporary validation artifacts were
+kept outside the repository.

@@ -36,7 +36,7 @@ def main():
     rows = []
     for variant in ("cma_es", "one_fifth", "self_adaptive"):
         for selection in ("scalar", "lexicographic"):
-            for mr_objective in ("minimize", "maximize"):
+            for mr_objective in ("behavioral_deviation", "semantic_recovery"):
                 for coevolved in ([False, True] if args.with_filter_coevolution else [False]):
                     for seed in seeds:
                         config = ESConfig(

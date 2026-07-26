@@ -84,7 +84,7 @@ def build_probe_prompts() -> list[Prompt]:
     ]
 
 
-def run_probe(mr_objective: str = "minimize") -> list[Prompt]:
+def run_probe(mr_objective: str = "behavioral_deviation") -> list[Prompt]:
     prompts = build_probe_prompts()
     ref_outputs = [reference_for_prompt(prompt) for prompt in prompts]
     direct_outputs = [prompt.direct_output for prompt in prompts]
@@ -101,7 +101,7 @@ def run_probe(mr_objective: str = "minimize") -> list[Prompt]:
 
 if __name__ == "__main__":
     print("\nmr_objective,manual_response,asv,mr,behavioral_deviation,mr_component,fitness")
-    for objective in ("minimize", "maximize"):
+    for objective in ("behavioral_deviation", "semantic_recovery"):
         rows = run_probe(mr_objective=objective)
         for prompt in rows:
             metrics = prompt.metrics

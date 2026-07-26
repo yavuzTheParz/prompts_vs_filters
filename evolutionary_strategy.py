@@ -20,6 +20,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from Prompt_class import Content, Prompt, Structure
+from mr_objective import (
+    BEHAVIORAL_DEVIATION,
+    SEMANTIC_RECOVERY,
+    normalize_mr_objective,
+)
 from selection import lexicographic_key, scalar_key, sort_population
 
 
@@ -44,7 +49,7 @@ class ESConfig:
     random_seed: Optional[int] = None
     lightweight: bool = False
     selection_mode: str = "scalar"
-    mr_objective: str = "minimize"
+    mr_objective: str = BEHAVIORAL_DEVIATION
     filter_update_every: int = 0
     top_k_filter: int = 5
     benign_csv_path: Optional[str] = None
@@ -181,7 +186,7 @@ def _is_better(a: Prompt, b: Prompt, config: Optional[ESConfig] = None) -> bool:
     """Return True when prompt a is preferred over prompt b (fitness is maximized)."""
     mode = config.selection_mode if config else "scalar"
     if mode == "lexicographic":
-        mr_objective = config.mr_objective if config else "minimize"
+        mr_objective = config.mr_objective if config else BEHAVIORAL_DEVIATION
         return lexicographic_key(a, mr_objective=mr_objective) > lexicographic_key(
             b,
             mr_objective=mr_objective,
@@ -191,7 +196,7 @@ def _is_better(a: Prompt, b: Prompt, config: Optional[ESConfig] = None) -> bool:
 
 def _sort_best_first(population: List[Prompt], config: Optional[ESConfig] = None) -> List[Prompt]:
     mode = config.selection_mode if config else "scalar"
-    mr_objective = config.mr_objective if config else "minimize"
+    mr_objective = config.mr_objective if config else BEHAVIORAL_DEVIATION
     return sort_population(population, mode=mode, mr_objective=mr_objective)
 
 
@@ -340,7 +345,10 @@ def _heavy_mutate_text(text, style, template_manager, style_manager, tokenizer, 
     return hybrid_mutate_optimized(text, style, template_manager, style_manager, tokenizer, bert_model)
 
 
-def _lightweight_evaluator(population: List[Prompt], mr_objective: str = "minimize") -> None:
+def _lightweight_evaluator(
+    population: List[Prompt],
+    mr_objective: str = BEHAVIORAL_DEVIATION,
+) -> None:
     """
     Deterministic dependency-free evaluator for dry-runs.
 
@@ -354,7 +362,11 @@ def _lightweight_evaluator(population: List[Prompt], mr_objective: str = "minimi
         simulated_mr = max(0.0, 1.0 - length_score)
         simulated_asv = 0.1 if p.output_prompts else 0.0
         behavioral_deviation = 1.0 - simulated_mr
-        mr_component = simulated_mr if mr_objective == "maximize" else behavioral_deviation
+        selected_mr_component = (
+            simulated_mr
+            if mr_objective == SEMANTIC_RECOVERY
+            else behavioral_deviation
+        )
         repetition_penalty = _repetition_penalty(p.input_prompt)
         length_penalty = max(0.0, (len(p.input_prompt) - 500) / 500.0)
 
@@ -362,13 +374,13 @@ def _lightweight_evaluator(population: List[Prompt], mr_objective: str = "minimi
             "asv": float(simulated_asv),
             "mr": float(simulated_mr),
             "behavioral_deviation": float(behavioral_deviation),
-            "mr_component": float(mr_component),
+            "mr_component": float(selected_mr_component),
             "fluency": 1.0 if len(p.input_prompt.split()) >= 3 else 0.25,
             "diversity": 0.0,
             "length_penalty": float(min(length_penalty, 1.0)),
             "repetition_penalty": float(repetition_penalty),
         }
-        p.fitness = 0.7 * simulated_asv + 0.3 * mr_component
+        p.fitness = 0.7 * simulated_asv + 0.3 * selected_mr_component
 
 
 def _repetition_penalty(text: str) -> float:
@@ -400,7 +412,7 @@ def _evaluate_population(
     if lightweight:
         _lightweight_evaluator(
             population,
-            mr_objective=getattr(evaluator, "mr_objective", "minimize"),
+            mr_objective=getattr(evaluator, "mr_objective", BEHAVIORAL_DEVIATION),
         )
     else:
         evaluator(population)
@@ -603,9 +615,7 @@ def evolutionary_strategy_run(
     config.selection_mode = (config.selection_mode or "scalar").strip().lower()
     if config.selection_mode not in {"scalar", "lexicographic"}:
         raise ValueError("config.selection_mode must be either 'scalar' or 'lexicographic'")
-    config.mr_objective = (config.mr_objective or "minimize").strip().lower()
-    if config.mr_objective not in {"minimize", "maximize"}:
-        raise ValueError("config.mr_objective must be either 'minimize' or 'maximize'")
+    config.mr_objective = normalize_mr_objective(config.mr_objective)
 
     if config.lightweight:
         template_manager = style_manager = tokenizer = bert_model = None

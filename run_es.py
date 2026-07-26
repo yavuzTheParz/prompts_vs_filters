@@ -9,6 +9,15 @@ from pathlib import Path
 from typing import Optional
 
 from evolutionary_strategy import ESConfig, evolutionary_strategy_run
+from mr_objective import (
+    BEHAVIORAL_DEVIATION,
+    LEGACY_MR_OBJECTIVE_ALIASES,
+    MR_OBJECTIVE_MODES,
+    SEMANTIC_RECOVERY,
+    fitness_formula,
+    mr_direction_description,
+    normalize_mr_objective,
+)
 
 
 DEFAULT_FILTER_PROMPT = (
@@ -126,6 +135,11 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
         "args": {k: v for k, v in vars(args).items() if k != "api_key"},
         "config": _safe_asdict(config),
         "model_name": args.model,
+        "mr_objective": {
+            "mode": config.mr_objective,
+            "formula": fitness_formula(config.mr_objective),
+            "definition": mr_direction_description(config.mr_objective),
+        },
     }
     (root / "config.json").write_text(
         json.dumps(config_payload, indent=2, ensure_ascii=False),
@@ -159,8 +173,15 @@ def parse_args():
     parser.add_argument("--survival", default="(mu+lambda)", help="(mu+lambda) or (mu,lambda)")
     parser.add_argument("--selection-mode", choices=["scalar", "lexicographic"], default="scalar",
                         help="Scalar uses weighted fitness; lexicographic maximizes ASV first then minimizes MR.")
-    parser.add_argument("--mr-objective", choices=["minimize", "maximize"], default="minimize",
-                        help="How MR is optimized after ASV: minimize for behavioral deviation, maximize for semantic preservation.")
+    parser.add_argument(
+        "--mr-objective",
+        choices=[*MR_OBJECTIVE_MODES, *LEGACY_MR_OBJECTIVE_ALIASES],
+        default=BEHAVIORAL_DEVIATION,
+        help=(
+            "MR interpretation: behavioral_deviation rewards 1-MR; "
+            "semantic_recovery rewards MR. Legacy minimize/maximize aliases are deprecated."
+        ),
+    )
 
     # --- Data ---
     parser.add_argument("--csv", default="prompts/initial_population.csv")
@@ -207,6 +228,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    args.mr_objective = normalize_mr_objective(args.mr_objective)
 
     # Propagate k-evals to the environment so run_llm.assign_outputs picks it up
     os.environ["PROMPTS_VS_FILTERS_K_EVALS"] = str(max(1, int(args.k_evals or 1)))
@@ -250,9 +272,11 @@ def main():
     print("\n=== ES RESULT ===")
     print(f"Runtime:              {result.runtime_sec:.2f}s")
     print(f"Best fitness:         {result.best.fitness:.4f}")
+    print(f"MR objective mode:    {config.mr_objective}")
+    print(f"Fitness formula:      {fitness_formula(config.mr_objective)}")
     m = result.best.metrics or {}
     print(f"Best ASV:             {m.get('asv', 0.0):.4f}")
-    if args.mr_objective == "maximize":
+    if args.mr_objective == SEMANTIC_RECOVERY:
         mr_note = "higher = more semantic preservation"
     else:
         mr_note = "lower = more behavioral deviation"
