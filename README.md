@@ -293,6 +293,18 @@ threshold. Exact duplicates and over-limit mutations are rejected with a
 reasoned mutation log. `compress_mutation()` removes tagged style material and
 adjacent repeated words.
 
+## Quality constraints and diversity
+
+Selection applies hard validity gates before optimizing the attack objective.
+API errors, missing outputs, over-length prompts, and excessive repetition
+receive zero fitness. Valid candidates receive documented soft length and
+repetition penalties. Token-set distance provides population diversity, and
+exact/near duplicates are invalidated before parent selection.
+
+Configure the gates with `--max-prompt-chars`, `--max-repetition`, and
+`--near-duplicate-threshold`. Generation summaries include population diversity
+and rejection counts by reason.
+
 ## Legacy GA runner
 
 The legacy GA-style runner is still available:

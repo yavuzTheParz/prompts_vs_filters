@@ -82,6 +82,12 @@ def write_history_csv(path: str, history):
         "best_length_penalty",
         "best_repetition_penalty",
         "best_api_error",
+        "population_diversity",
+        "rejected_api_error",
+        "rejected_empty_output",
+        "rejected_prompt_too_long",
+        "rejected_excessive_repetition",
+        "rejected_near_duplicate",
         "filter_attempted",
         "filter_changed",
         "filter_length",
@@ -223,6 +229,12 @@ def parse_args():
                         help="Temperature for filtered response sampling.")
     parser.add_argument("--max-sample-retries", type=int, default=2,
                         help="Retries after a failed or empty model sample.")
+    parser.add_argument("--max-prompt-chars", type=int, default=2000,
+                        help="Hard validity limit for prompt length.")
+    parser.add_argument("--max-repetition", type=float, default=0.55,
+                        help="Hard validity threshold for repetition penalty.")
+    parser.add_argument("--near-duplicate-threshold", type=float, default=0.05,
+                        help="Maximum token-distance treated as a near duplicate.")
 
     # --- Filter coevolution (Gap 2 fix — previously hidden in ESConfig) ---
     parser.add_argument("--filter-update-every", type=int, default=0,
@@ -290,6 +302,11 @@ def main():
         direct_temperature=args.direct_temperature,
         filtered_temperature=args.filtered_temperature,
         max_sample_retries=max(0, args.max_sample_retries),
+        max_prompt_chars=max(1, args.max_prompt_chars),
+        max_repetition=max(0.0, min(1.0, args.max_repetition)),
+        near_duplicate_threshold=max(
+            0.0, min(1.0, args.near_duplicate_threshold)
+        ),
     )
 
     result = evolutionary_strategy_run(

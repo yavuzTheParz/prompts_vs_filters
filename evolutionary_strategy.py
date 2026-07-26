@@ -26,6 +26,7 @@ from mr_objective import (
     normalize_mr_objective,
 )
 from selection import lexicographic_key, scalar_key, sort_population
+from quality_constraints import apply_quality_constraints, mark_near_duplicates
 
 
 FitnessEvaluator = Callable[[List[Prompt]], None]
@@ -58,6 +59,9 @@ class ESConfig:
     direct_temperature: float = 0.0
     filtered_temperature: float = 0.7
     max_sample_retries: int = 2
+    max_prompt_chars: int = 2000
+    max_repetition: float = 0.55
+    near_duplicate_threshold: float = 0.05
 
     style_selection: str = "random"
     mutation_styles: Tuple[str, ...] = ("imperative", "plea")
@@ -202,7 +206,12 @@ def _is_better(a: Prompt, b: Prompt, config: Optional[ESConfig] = None) -> bool:
 def _sort_best_first(population: List[Prompt], config: Optional[ESConfig] = None) -> List[Prompt]:
     mode = config.selection_mode if config else "scalar"
     mr_objective = config.mr_objective if config else BEHAVIORAL_DEVIATION
-    return sort_population(population, mode=mode, mr_objective=mr_objective)
+    ranked = sort_population(population, mode=mode, mr_objective=mr_objective)
+    mark_near_duplicates(
+        ranked,
+        threshold=config.near_duplicate_threshold if config else 0.05,
+    )
+    return sort_population(ranked, mode=mode, mr_objective=mr_objective)
 
 
 def _normalize_survival_schema(schema: str) -> str:
@@ -469,6 +478,11 @@ def _evaluate_population(
         )
     else:
         evaluator(population)
+    apply_quality_constraints(
+        population,
+        max_prompt_chars=config.max_prompt_chars if config else 2000,
+        max_repetition=config.max_repetition if config else 0.55,
+    )
 
 
 def _survival_plus(parents: List[Prompt], offspring: List[Prompt], mu: int, config: ESConfig) -> List[Prompt]:
@@ -495,6 +509,11 @@ def _history_metrics(
     sigma: float,
 ) -> Dict[str, float]:
     mean_parent_fitness = sum(p.fitness for p in parents) / len(parents)
+    rejection_counts: Dict[str, int] = {}
+    for prompt in parents:
+        reason = str((prompt.metrics or {}).get("validity_reason", "valid"))
+        if reason != "valid":
+            rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
     return {
         "generation": float(generation),
         "best_fitness": float(best.fitness),
@@ -519,6 +538,18 @@ def _history_metrics(
         "best_length_penalty": _metric(best, "length_penalty"),
         "best_repetition_penalty": _metric(best, "repetition_penalty"),
         "best_api_error": _metric(best, "api_error"),
+        "population_diversity": _metric(best, "population_diversity"),
+        "rejected_api_error": float(rejection_counts.get("api_error", 0)),
+        "rejected_empty_output": float(rejection_counts.get("empty_output", 0)),
+        "rejected_prompt_too_long": float(
+            rejection_counts.get("prompt_too_long", 0)
+        ),
+        "rejected_excessive_repetition": float(
+            rejection_counts.get("excessive_repetition", 0)
+        ),
+        "rejected_near_duplicate": float(
+            rejection_counts.get("near_duplicate", 0)
+        ),
     }
 
 

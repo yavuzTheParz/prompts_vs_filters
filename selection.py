@@ -27,6 +27,18 @@ def scalar_key(p: Prompt) -> float:
     return _flt(getattr(p, "fitness", 0.0))
 
 
+def constraint_key(p: Prompt, mr_objective: str = BEHAVIORAL_DEVIATION):
+    metrics = getattr(p, "metrics", {}) or {}
+    valid = _flt(metrics.get("valid", 1.0))
+    attack, mr_term = lexicographic_key(p, mr_objective)
+    quality = (
+        -get_metric(p, "repetition_penalty")
+        - get_metric(p, "length_penalty")
+        + get_metric(p, "diversity")
+    )
+    return (valid, attack, mr_term, quality, scalar_key(p))
+
+
 def lexicographic_key(
     p: Prompt,
     mr_objective: str = BEHAVIORAL_DEVIATION,
@@ -187,8 +199,18 @@ def sort_population(
 ) -> List[Prompt]:
     mode = (mode or "scalar").strip().lower()
     if mode == "scalar":
-        return sorted(list(population), key=scalar_key, reverse=True)
-    if mode in {"lexicographic", "rank_partitioning", "partitioning", "rank"}:
+        return sorted(
+            list(population),
+            key=lambda prompt: constraint_key(prompt, mr_objective),
+            reverse=True,
+        )
+    if mode == "lexicographic":
+        return sorted(
+            list(population),
+            key=lambda prompt: constraint_key(prompt, mr_objective),
+            reverse=True,
+        )
+    if mode in {"rank_partitioning", "partitioning", "rank"}:
         return sort_population_rank_partitioning(
             population,
             step_asv=step_asv,

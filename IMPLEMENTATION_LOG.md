@@ -278,3 +278,38 @@ python3 -B -m unittest discover -s tests -v
 
 Result: 38 tests passed; 1 opt-in local-LLM integration test was skipped because
 no local model endpoint was configured.
+
+## T6 - Use Quality Constraints and Population Diversity
+
+- Status: Complete
+- Date: 2026-07-26
+
+### Changes
+
+- Added hard validity gates for API errors, missing outputs, excessive prompt
+  length, and excessive repetition.
+- Applied configurable soft length/repetition penalties only to valid
+  candidates.
+- Added token-distance population and per-candidate diversity metrics.
+- Added exact and near-duplicate suppression before parent selection.
+- Changed scalar and lexicographic selection to order validity first, attack
+  objective second, MR mode third, and quality/diversity last.
+- Added generation-level diversity and rejection counts by reason.
+- Exposed quality thresholds through CLI and `config.json`.
+
+### Validation
+
+Targeted quality and selection tests:
+
+```bash
+python3 -B -m unittest \
+  tests.test_quality_constraints tests.test_selection tests.test_core_behaviour -v
+```
+
+Result: 15 tests passed.
+
+Full unit-test suite and a fixed-seed dry-run were used to verify integration
+with the ES loop and generation-summary schema.
+
+Result: 42 tests passed; 1 opt-in local-LLM integration test was skipped. The
+dry-run recorded nonzero population diversity and per-reason rejection counts.
