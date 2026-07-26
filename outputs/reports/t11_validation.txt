@@ -1,0 +1,33 @@
+T11 FINAL VALIDATION
+Date: 2026-07-27
+Branch: emre
+
+Fresh environment
+  Python venv: isolated under /tmp
+  Install: python -m pip install -r requirements-dry-run.txt
+  Command: python -B run_es.py --dry-run --variant cma_es --mu 3 --lambda 4
+           --generations 2 --seed 101 --history-csv /tmp/t11_fresh_history.csv
+           --run-dir /tmp/t11_fresh_run --quiet
+  Result: PASS
+  Artifacts: config, generation summary, filter events/versions, final filter,
+             outputs, samples, lineage, manifest, aggregate summary
+
+Documentation/provenance/ablation tests
+  Command: python3 -B -m unittest tests.test_documentation
+           tests.test_provenance tests.test_ablation -v
+  Result: PASS - 13 tests
+
+Full suite
+  Command: python3 -B -m unittest discover -s tests -v
+  Result: PASS - 62 tests; 1 opt-in local-LLM integration test skipped
+
+Experiment evidence
+  Smoke: 14/14 complete, 0 exclusions
+  Full matrix: 35/35 complete, 0 exclusions
+  Plots: 6 SVG convergence plots
+  Statistics: 95% confidence intervals and Cohen's d
+
+Safety checks
+  Aggregate T10 tables contain no raw prompt/output fields.
+  Documentation test rejects the removed stale CLI option.
+  Staged secret-pattern and whitespace scans are required before commit.

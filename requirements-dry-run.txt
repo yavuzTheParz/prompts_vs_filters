@@ -1,0 +1,2 @@
+# The deterministic dry-run and its unittest suite use only the Python standard library.
+# Install requirements.txt only for LLM-backed and embedding-backed experiments.

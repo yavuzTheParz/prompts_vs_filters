@@ -20,6 +20,16 @@ This repository implements a prompt-population evolution framework for studying 
 - `experiments/run_ablation.py`: lightweight ablation runner for ES variants and selection modes.
 - `prompts/initial_population.csv`: initial labelled prompt population.
 
+Audit documentation:
+
+- [`docs/architecture.md`](docs/architecture.md): direct/filtered generation,
+  scoring, selection, lineage, and filter-update flow.
+- [`docs/metrics.md`](docs/metrics.md): every metric formula and direction.
+- [`docs/safety.md`](docs/safety.md): safe scope, sanitization, and artifact policy.
+- [`docs/migration.md`](docs/migration.md): pre-fix pilot compatibility rules.
+- [`outputs/reports/final_implementation_report.md`](outputs/reports/final_implementation_report.md):
+  commits, validation evidence, limitations, and unresolved decisions.
+
 ## Installation
 
 Create and activate a virtual environment:
@@ -34,6 +44,16 @@ Install dependencies:
 
 ```bash
 pip install -r requirements.txt
+```
+
+For a dependency-free dry-run validation in a fresh environment:
+
+```bash
+python3 -m venv .venv-dry
+source .venv-dry/bin/activate
+python -m pip install -r requirements-dry-run.txt
+python -B run_es.py --dry-run --variant cma_es --mu 3 --lambda 4 \
+  --generations 2 --seed 101 --run-dir outputs/runs/fresh_dry_run
 ```
 
 Optional, but recommended for better part-of-speech-aware mutation:
@@ -328,16 +348,6 @@ and behavioral-deviation values were not necessarily computed against a
 prompt-specific direct response. Do not compare those historical MR/BD values
 directly with post-fix runs.
 
-## Ablation runner
-
-The lightweight ablation runner compares ES variants and selection modes across seeds:
-
-```bash
-python experiments/run_ablation.py --generations 2 --seeds 1,2,3
-```
-
-Add `--with-filter-coevolution` to include the filter-update condition in dry-run bookkeeping.
-
 ## Notes on CMA-ES and sigma
 
 In the prompt project, the search space is discrete text. This is a
@@ -386,4 +396,8 @@ For the proposal and main experiments, prefer `run_es.py` and `evolutionary_stra
 
 ## Safety scope
 
-This repository is for controlled defensive evaluation, filter robustness measurement, and benchmark construction. Do not use generated prompts or outputs to obtain or distribute harmful instructions.
+This repository is for controlled defensive evaluation, filter robustness
+measurement, and benchmark construction. Do not use generated prompts or
+outputs to obtain or distribute harmful instructions. The complete fixture,
+credential, raw-output, and interpretation policy is in
+[`docs/safety.md`](docs/safety.md).

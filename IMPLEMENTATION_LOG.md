@@ -453,3 +453,47 @@ These results validate the experimental plumbing only. They use deterministic
 dry-run proxies and therefore do not support real-model attack-success or
 coevolution-effectiveness claims. Fixed-filter and coevolution outputs remain
 separately labeled.
+
+## T11 - Finalize Documentation and Evidence Package
+
+- Status: Complete
+- Date: 2026-07-27
+
+### Changes
+
+- Added architecture/data-flow documentation for direct generation, filtered
+  sampling, scoring, constraints, selection, lineage, and accepted filter
+  updates.
+- Documented every active metric formula, direction, hard validity rule, soft
+  penalty, and selection priority.
+- Added explicit safe-scope, sanitization, raw-output, fixture, credential, and
+  scientific-interpretation policies.
+- Added a migration guide separating historical pre-fix pilots from corrected
+  results.
+- Updated README commands to current CLI options and removed the stale legacy
+  ablation command.
+- Added a changelog, final implementation report, validation report, and
+  machine-readable evidence manifest.
+- Added automated documentation/CLI/evidence consistency tests.
+- Added a standard-library-only dry-run requirements file for isolated
+  validation.
+
+### Validation
+
+```bash
+python3 -m venv /tmp/prompts_filters_t11_venv
+/tmp/prompts_filters_t11_venv/bin/python -m pip install \
+  -r requirements-dry-run.txt
+/tmp/prompts_filters_t11_venv/bin/python -B run_es.py --dry-run \
+  --variant cma_es --mu 3 --lambda 4 --generations 2 --seed 101 \
+  --history-csv /tmp/t11_fresh_history.csv \
+  --run-dir /tmp/t11_fresh_run --quiet
+python3 -B -m unittest tests.test_documentation tests.test_provenance \
+  tests.test_ablation -v
+python3 -B -m unittest discover -s tests -v
+```
+
+Result: the isolated fresh-environment install and dry-run succeeded and
+produced the complete structured artifact set. Thirteen focused
+documentation/provenance/ablation tests passed. The full suite passed 62 tests
+with 1 opt-in local-LLM integration test skipped.
