@@ -281,7 +281,17 @@ Add `--with-filter-coevolution` to include the filter-update condition in dry-ru
 
 ## Notes on CMA-ES and sigma
 
-In the prompt project, the search space is discrete text. The CMA-ES variant therefore does not optimize text directly. It samples a small continuous control vector and maps it to mutation style and mutation intensity. `sigma` remains the base mutation intensity; `cma_step_size` and the learned covariance control exploration around style and intensity choices.
+In the prompt project, the search space is discrete text. This is a
+**CMA-ES-style / CMA-inspired control adaptation**, not a claim of full CMA-ES
+optimization over text. It samples a small continuous control vector and maps
+that vector to discrete mutation style and mutation intensity. `sigma` remains
+the base intensity; `cma_step_size` and the learned covariance control
+exploration around those choices.
+
+`--survival '(mu+lambda)'` enables plus survival, where parents compete with
+offspring. `--survival '(mu,lambda)'` enables comma survival, where only
+offspring can survive. Selected individuals retain their control vector and
+sigma metadata for the next distribution update.
 
 ## Structural mutation controls
 

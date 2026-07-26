@@ -493,6 +493,29 @@ def _survival_comma(offspring: List[Prompt], mu: int, config: ESConfig) -> List[
     return _sort_best_first(offspring, config)[:mu]
 
 
+def _select_cma_survivors(
+    parents: List[Prompt],
+    offspring: List[Prompt],
+    mu: int,
+    config: ESConfig,
+    survival_mode: str,
+) -> Tuple[List[Prompt], List[List[float]], List[float]]:
+    candidates = offspring if survival_mode == "comma" else parents + offspring
+    selected = _sort_best_first(candidates, config)[:mu]
+    vectors = [
+        list((prompt.metadata or {}).get("cma_vector", [0.0, 0.0]))
+        for prompt in selected
+    ]
+    sigmas = [
+        float((prompt.metadata or {}).get("cma_sigma", config.sigma))
+        for prompt in selected
+    ]
+    for prompt, vector, sigma in zip(selected, vectors, sigmas):
+        prompt.metadata["cma_vector"] = list(vector)
+        prompt.metadata["cma_sigma"] = sigma
+    return selected, vectors, sigmas
+
+
 def _best_of(population: List[Prompt], config: ESConfig) -> Prompt:
     return _sort_best_first(population, config)[0]
 
@@ -747,6 +770,11 @@ def evolutionary_strategy_run(
         sample_records=sample_records,
     )
     parents = _sort_best_first(parents, config)
+    if variant == "cma_es":
+        for parent in parents:
+            parent.metadata["cma_vector"] = [0.0, 0.0]
+            parent.metadata["cma_style"] = "initial"
+            parent.metadata["cma_sigma"] = float(config.sigma)
     best = _clone_prompt(parents[0], keep_outputs=True)
 
     parent_sigmas = [float(config.sigma)] * config.mu
@@ -844,22 +872,20 @@ def evolutionary_strategy_run(
         success_rate = successes / max(1, len(offspring))
 
         if variant == "cma_es":
-            ranked_offspring = _sort_best_first(offspring, config)
-            vector_by_id = {
-                id(prompt): vector for prompt, vector in zip(offspring, offspring_cma_vectors)
-            }
-            sigma_by_id = {
-                id(prompt): sigma for prompt, sigma in zip(offspring, offspring_sigmas)
-            }
-            selected_prompts = ranked_offspring[: config.mu]
-            selected_vectors = [vector_by_id[id(prompt)] for prompt in selected_prompts]
+            selected_prompts, selected_vectors, selected_sigmas = _select_cma_survivors(
+                parents,
+                offspring,
+                config.mu,
+                config,
+                survival_mode,
+            )
             cma_mean, cma_cov = _update_cma_distribution(
                 selected_vectors,
                 cma_cov,
                 config.cma_cov_reg,
             )
             parents = selected_prompts
-            parent_sigmas = [sigma_by_id[id(prompt)] for prompt in selected_prompts]
+            parent_sigmas = selected_sigmas
 
         elif variant == "one_fifth":
             if success_rate > 0.2:

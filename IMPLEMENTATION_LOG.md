@@ -313,3 +313,31 @@ with the ES loop and generation-summary schema.
 
 Result: 42 tests passed; 1 opt-in local-LLM integration test was skipped. The
 dry-run recorded nonzero population diversity and per-reason rejection counts.
+
+## T7 - Correct CMA-ES Survival and Method Naming
+
+- Status: Complete
+- Date: 2026-07-26
+
+### Changes
+
+- Made CMA-style selection honor configured plus and comma survival.
+- Plus survival ranks parents and offspring together; comma survival permits
+  only offspring to survive.
+- Preserved CMA control vector and sigma metadata for every selected
+  individual, including surviving parents.
+- Updated CMA mean/covariance from the selected survivors' control vectors.
+- Clarified that the implementation is CMA-ES-style/CMA-inspired control
+  adaptation over discrete style and mutation-intensity choices, not direct
+  continuous optimization of text.
+
+### Validation
+
+```bash
+python3 -B -m unittest tests.test_cma_survival tests.test_core_behaviour -v
+python3 -B -m unittest discover -s tests -v
+```
+
+Result: 3 focused survival/distribution tests passed; the full suite passed 45
+tests with 1 opt-in integration test skipped. Fixed-seed plus and comma dry-runs
+both completed and recorded the selected survival schema in `config.json`.
