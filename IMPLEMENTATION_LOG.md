@@ -406,3 +406,50 @@ tests with 1 opt-in local-LLM integration test skipped. The fixed-seed dry-run
 completed and produced configuration, generation summary, filter event/version,
 final filter, output, sample, lineage, manifest, and aggregate summary
 artifacts.
+
+## T10 - Controlled Regression and Ablation Experiments
+
+- Status: Complete
+- Date: 2026-07-26
+
+### Changes
+
+- Added a versioned seven-condition matrix covering the six required
+  fixed-filter/coevolution, MR-mode, and mutation ablations plus a scalar versus
+  constraint-aware selection comparison.
+- Added explicit structural- and token-mutation operator switches for both
+  lightweight and dependency-backed mutation paths.
+- Replaced the ad hoc experiment loop with a deterministic runner that records
+  completion status, exclusion reason, initial-pool hash, seed, model setting,
+  aggregate metrics, and per-generation history.
+- Added reproducible analysis for 95% confidence intervals, Cohen's d effect
+  sizes, rule-based exclusions, and six convergence SVGs.
+- Added a sanitized aggregate fixture for the pre-fix-compatible versus
+  prompt-specific direct-baseline comparison.
+- Saved separate two-seed smoke and five-seed full dry-run evidence under
+  `outputs/runs/`.
+
+### Validation
+
+```bash
+python3 -B -m unittest tests.test_ablation tests.test_mutation_manager \
+  tests.test_run_es -v
+python3 -B experiments/run_ablation.py --generations 10 --mu 3 --lambda 8 \
+  --seeds 101,102 --output-dir outputs/runs/t10_smoke
+python3 -B experiments/run_ablation.py --generations 10 --mu 3 --lambda 8 \
+  --seeds 101,102,103,104,105 --output-dir outputs/runs/t10_full
+python3 -B analysis/analyze_ablation.py --run-dir outputs/runs/t10_full \
+  --output-dir outputs/runs/t10_full/analysis
+python3 -B -m unittest discover -s tests -v
+```
+
+Result: 14 targeted tests passed. The smoke matrix completed 14/14 runs and the
+full matrix completed 35/35 runs, each with one initial-pool hash and one model
+setting; neither required exclusions. Analysis regenerated confidence
+interval/effect-size tables and all six required convergence plots. The full
+suite passed 59 tests with 1 opt-in local-LLM integration test skipped.
+
+These results validate the experimental plumbing only. They use deterministic
+dry-run proxies and therefore do not support real-model attack-success or
+coevolution-effectiveness claims. Fixed-filter and coevolution outputs remain
+separately labeled.

@@ -67,6 +67,8 @@ class ESConfig:
 
     style_selection: str = "random"
     mutation_styles: Tuple[str, ...] = ("imperative", "plea")
+    structural_mutation_enabled: bool = True
+    token_mutation_enabled: bool = True
     cma_step_size: float = 1.0
     cma_cov_reg: float = 1e-6
 
@@ -296,7 +298,7 @@ def _update_cma_distribution(
     ]
 
 
-def _lightweight_mutate_text(text: str, style: Optional[str]) -> Tuple[str, str]:
+def _lightweight_structural_mutate_text(text: str, style: Optional[str]) -> Tuple[str, str]:
     """Small mutation used only for dependency-free dry-runs."""
     text = text or ""
     if style == "plea":
@@ -312,6 +314,17 @@ def _lightweight_mutate_text(text: str, style: Optional[str]) -> Tuple[str, str]
     else:
         choices = [(text + " Please respond carefully.", "LW_NEUTRAL")]
     return random.choice(choices)
+
+
+def _lightweight_token_mutate_text(text: str) -> Tuple[str, str]:
+    words = (text or "").split()
+    candidates = [index for index, word in enumerate(words) if len(word.strip(".,!?")) > 3]
+    if not candidates:
+        return text, "TOKEN_NO_CANDIDATE"
+    index = random.choice(candidates)
+    original = words[index]
+    words[index] = f"{original.rstrip('.,!?')}-reframed"
+    return " ".join(words), "TOKEN_REFRAME_ACCEPT"
 
 
 def _mutate_prompt(
@@ -334,8 +347,18 @@ def _mutate_prompt(
             logs.append("NO_STYLE")
             continue
 
-        if config.lightweight:
-            new_text, log = _lightweight_mutate_text(child.input_prompt, style)
+        if not config.structural_mutation_enabled and not config.token_mutation_enabled:
+            raise ValueError("At least one mutation operator must be enabled")
+
+        use_structural = config.structural_mutation_enabled and (
+            not config.token_mutation_enabled or random.random() < 0.60
+        )
+        if config.lightweight and use_structural:
+            new_text, log = _lightweight_structural_mutate_text(
+                child.input_prompt, style
+            )
+        elif config.lightweight:
+            new_text, log = _lightweight_token_mutate_text(child.input_prompt)
         else:
             new_text, log = _heavy_mutate_text(
                 child.input_prompt,
@@ -344,6 +367,8 @@ def _mutate_prompt(
                 style_manager,
                 tokenizer,
                 bert_model,
+                structural_enabled=config.structural_mutation_enabled,
+                token_enabled=config.token_mutation_enabled,
             )
         child.input_prompt = new_text
         logs.append(log)
@@ -357,11 +382,30 @@ def _mutate_prompt(
     return child, logs
 
 
-def _heavy_mutate_text(text, style, template_manager, style_manager, tokenizer, bert_model):
+def _heavy_mutate_text(
+    text,
+    style,
+    template_manager,
+    style_manager,
+    tokenizer,
+    bert_model,
+    *,
+    structural_enabled=True,
+    token_enabled=True,
+):
     if template_manager is None:
         raise RuntimeError("Heavy mutation requested without initialized mutation objects")
     from mutation_manager import hybrid_mutate_optimized
-    return hybrid_mutate_optimized(text, style, template_manager, style_manager, tokenizer, bert_model)
+    return hybrid_mutate_optimized(
+        text,
+        style,
+        template_manager,
+        style_manager,
+        tokenizer,
+        bert_model,
+        structural_enabled=structural_enabled,
+        token_enabled=token_enabled,
+    )
 
 
 def _lightweight_evaluator(
@@ -779,6 +823,8 @@ def evolutionary_strategy_run(
     config.selection_mode = (config.selection_mode or "scalar").strip().lower()
     if config.selection_mode not in {"scalar", "lexicographic"}:
         raise ValueError("config.selection_mode must be either 'scalar' or 'lexicographic'")
+    if not config.structural_mutation_enabled and not config.token_mutation_enabled:
+        raise ValueError("At least one mutation operator must be enabled")
     config.mr_objective = normalize_mr_objective(config.mr_objective)
 
     if config.lightweight:

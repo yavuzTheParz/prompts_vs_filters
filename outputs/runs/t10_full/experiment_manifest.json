@@ -1,0 +1,27 @@
+{
+  "matrix_version": "t10-v1",
+  "commit_sha": "77dc4b7e2c14c30486f1e841b14c00847c03fef8",
+  "matrix_path": "/Users/emrekilic/Personal/prompts_vs_filters/experiments/configs/ablation_matrix.json",
+  "seeds": [
+    101,
+    102,
+    103,
+    104,
+    105
+  ],
+  "generations": 10,
+  "mu": 3,
+  "lambda": 8,
+  "initial_pool": "/Users/emrekilic/Personal/prompts_vs_filters/prompts/initial_population.csv",
+  "initial_pool_sha256": "3afb5c5c994fecb3d2e3b3c510bd706d3473b1bab42f8e212180cdaa0d5ac1f0",
+  "model_name": "dry-run-deterministic",
+  "dependencies": {
+    "python": "3.12.1",
+    "numpy": "2.2.6",
+    "torch": "2.13.0",
+    "transformers": "5.14.1",
+    "sentence-transformers": "5.6.1"
+  },
+  "command": "experiments/run_ablation.py --generations 10 --mu 3 --lambda 8 --seeds 101,102,103,104,105 --output-dir outputs/runs/t10_full",
+  "completion_rule": "status == complete and generations == requested generations"
+}

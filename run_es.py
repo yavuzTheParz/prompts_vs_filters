@@ -332,6 +332,10 @@ def parse_args():
                         help="Hard validity threshold for repetition penalty.")
     parser.add_argument("--near-duplicate-threshold", type=float, default=0.05,
                         help="Maximum token-distance treated as a near duplicate.")
+    parser.add_argument("--disable-structural-mutation", action="store_true",
+                        help="Disable structural prompt mutation (token mutation remains enabled).")
+    parser.add_argument("--disable-token-mutation", action="store_true",
+                        help="Disable token-level mutation (structural mutation remains enabled).")
 
     # --- Filter coevolution (Gap 2 fix — previously hidden in ESConfig) ---
     parser.add_argument("--filter-update-every", type=int, default=0,
@@ -354,7 +358,8 @@ def parse_args():
                         help="Path for the per-generation metrics CSV.")
     parser.add_argument("--run-dir", default=None,
                         help="Directory for structured run artifacts: config.json, "
-                             "generation_summary.csv, filter_events.jsonl, filter_versions.jsonl, outputs.jsonl.")
+                             "generation_summary.csv, lineage.jsonl, manifest.json, "
+                             "summary.json, and evaluation records.")
     parser.add_argument("--quiet", action="store_true")
 
     return parser.parse_args()
@@ -404,6 +409,8 @@ def main():
         near_duplicate_threshold=max(
             0.0, min(1.0, args.near_duplicate_threshold)
         ),
+        structural_mutation_enabled=not args.disable_structural_mutation,
+        token_mutation_enabled=not args.disable_token_mutation,
     )
 
     result = evolutionary_strategy_run(

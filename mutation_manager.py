@@ -245,6 +245,9 @@ def hybrid_mutate_optimized(
     style_mgr: StyleManager,
     tokenizer: BertTokenizer,
     model: BertForMaskedLM,
+    *,
+    structural_enabled: bool = True,
+    token_enabled: bool = True,
 ):
     """
     Apply one prompt mutation.
@@ -255,23 +258,31 @@ def hybrid_mutate_optimized(
     """
     if style not in {"imperative", "plea"}:
         return prompt_text, "NO_STYLE"
+    if not structural_enabled and not token_enabled:
+        raise ValueError("At least one mutation operator must be enabled")
 
-    if random.random() < 0.60:
+    if structural_enabled and (not token_enabled or random.random() < 0.60):
         mutated = template_mgr.apply_structural_mutation(prompt_text, style)
         operation = template_mgr.last_mutation_log.get("operation", "structural").upper()
         accepted = template_mgr.last_mutation_log.get("accepted", False)
         return mutated, f"STRUCTURAL_{operation}_{'ACCEPT' if accepted else 'REJECT'}"
 
     if torch is None or np is None or cosine_similarity is None or tokenizer is None or model is None or style_mgr is None:
+        if not structural_enabled:
+            return prompt_text, "TOKEN_DEPENDENCY_REJECT"
         mutated = template_mgr.apply_structural_mutation(prompt_text, style)
         return mutated, "STRUCTURAL_DEPENDENCY_FALLBACK"
 
     original_word, word_idx, pos_tag = _choose_target_token(prompt_text)
     if not original_word or word_idx is None:
+        if not structural_enabled:
+            return prompt_text, "TOKEN_NO_CANDIDATE"
         return template_mgr.apply_structural_mutation(prompt_text, style), "STRUCTURAL_FALLBACK"
 
     words = prompt_text.split()
     if word_idx < 0 or word_idx >= len(words):
+        if not structural_enabled:
+            return prompt_text, "TOKEN_INDEX_REJECT"
         return template_mgr.apply_structural_mutation(prompt_text, style), "STRUCTURAL_INDEX_FALLBACK"
 
     words[word_idx] = tokenizer.mask_token
@@ -280,6 +291,8 @@ def hybrid_mutate_optimized(
 
     mask_positions = torch.where(inputs["input_ids"] == tokenizer.mask_token_id)[1]
     if len(mask_positions) == 0:
+        if not structural_enabled:
+            return prompt_text, "TOKEN_MASK_REJECT"
         return template_mgr.apply_structural_mutation(prompt_text, style), "STRUCTURAL_MASK_FALLBACK"
 
     with torch.no_grad():
@@ -290,6 +303,8 @@ def hybrid_mutate_optimized(
     candidates = [c for c in candidates if c.isalpha() and c.lower() != original_word.lower()]
 
     if not candidates:
+        if not structural_enabled:
+            return prompt_text, "TOKEN_NO_CANDIDATE"
         return template_mgr.apply_structural_mutation(prompt_text, style), "STRUCTURAL_NO_CANDIDATE"
 
     style_vec = style_mgr.get_vector(style)

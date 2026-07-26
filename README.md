@@ -243,6 +243,48 @@ To run the same harness against a local LLM-backed experiment:
 python -B tests/run_full_validation.py --real-llm --base-url http://127.0.0.1:8000 --generations 3
 ```
 
+## Controlled ablations
+
+The committed T10 matrix compares MR modes, structural/token mutation modes,
+scalar versus constraint-aware lexicographic selection, and fixed-filter versus
+filter-coevolution runs. Every condition uses the same seed list, initial-pool
+hash, generation count, and documented model setting.
+
+Two-seed smoke gate:
+
+```bash
+python3 -B experiments/run_ablation.py \
+  --generations 10 --mu 3 --lambda 8 --seeds 101,102 \
+  --output-dir outputs/runs/t10_smoke
+python3 -B analysis/analyze_ablation.py \
+  --run-dir outputs/runs/t10_smoke \
+  --output-dir outputs/runs/t10_smoke/analysis
+```
+
+Five-seed controlled dry-run matrix:
+
+```bash
+python3 -B experiments/run_ablation.py \
+  --generations 10 --mu 3 --lambda 8 --seeds 101,102,103,104,105 \
+  --output-dir outputs/runs/t10_full
+python3 -B analysis/analyze_ablation.py \
+  --run-dir outputs/runs/t10_full \
+  --output-dir outputs/runs/t10_full/analysis
+```
+
+`run_summary.csv` explicitly marks failed/incomplete runs. The analysis includes
+only rows satisfying the manifest completion rule, reports 95% confidence
+intervals and Cohen's d against condition A, keeps fixed-filter and coevolution
+labels separate, and regenerates all six convergence plots from
+`generation_history.csv`. The pre-fix-compatible baseline comparison uses only
+the committed sanitized aggregate fixture.
+
+The committed T10 results are deterministic dry-run validation evidence, not
+evidence about real-model attack success. In particular, unchanged compliance
+and reference-similarity proxies must not be interpreted as genuine search
+improvement; prompt length, MR, and diversity are reported alongside them to
+expose metric artifacts and mode collapse.
+
 ## Output
 
 `run_es.py` prints the final best prompt and writes convergence/history data to:
