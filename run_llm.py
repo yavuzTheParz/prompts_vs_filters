@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 def _clean_assistant_text(text: str) -> str:
@@ -73,7 +73,11 @@ def assign_outputs(
     model_name: str = "local-qwen",
     generate_direct: bool = True,
     k_evals: Optional[int] = None,
-) -> None:
+    direct_temperature: float = 0.0,
+    filtered_temperature: float = 0.7,
+    max_sample_retries: int = 2,
+    generation: int = 0,
+) -> List[Dict[str, object]]:
     """
     Populate Prompt.output_prompts and Prompt.direct_output.
 
@@ -88,14 +92,63 @@ def assign_outputs(
     evaluation runs without redundant API calls.
     """
     k = _resolve_k_evals(k_evals)
+    new_records: List[Dict[str, object]] = []
+
+    def generate_sample(prompt_obj, prompt, kind, sample_index, temperature):
+        attempts = max(1, int(max_sample_retries) + 1)
+        last_error = ""
+        for attempt in range(1, attempts + 1):
+            try:
+                text = _generate(
+                    client,
+                    prompt,
+                    model_name=model_name,
+                    temperature=temperature,
+                )
+                if not text:
+                    raise ValueError("empty model response")
+                record = {
+                    "generation": int(generation),
+                    "input_prompt": prompt_obj.input_prompt,
+                    "kind": kind,
+                    "sample_index": int(sample_index),
+                    "attempt": attempt,
+                    "status": "valid",
+                    "temperature": float(temperature),
+                    "text": text,
+                }
+                new_records.append(record)
+                prompt_obj.metadata.setdefault("sample_records", []).append(record)
+                return text
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                record = {
+                    "generation": int(generation),
+                    "input_prompt": prompt_obj.input_prompt,
+                    "kind": kind,
+                    "sample_index": int(sample_index),
+                    "attempt": attempt,
+                    "status": "invalid",
+                    "temperature": float(temperature),
+                    "error": last_error,
+                }
+                new_records.append(record)
+                prompt_obj.metadata.setdefault("sample_records", []).append(record)
+        raise RuntimeError(
+            f"{kind} sample {sample_index} failed after {attempts} attempts: {last_error}"
+        )
 
     for prompt_obj in prompts:
         try:
             # Direct output: one sample without the filter, used as the MR reference baseline
             if generate_direct and not getattr(prompt_obj, "direct_output", ""):
                 direct_prompt = f"User:\n{prompt_obj.input_prompt}\n\nAssistant:"
-                prompt_obj.direct_output = _generate(
-                    client, direct_prompt, model_name=model_name, temperature=0.7
+                prompt_obj.direct_output = generate_sample(
+                    prompt_obj,
+                    direct_prompt,
+                    "direct",
+                    0,
+                    direct_temperature,
                 )
 
             # Attacked output: K samples through the defensive filter
@@ -109,8 +162,13 @@ def assign_outputs(
             prompt_obj.output_prompts = list(current_outputs)
 
             while len(prompt_obj.output_prompts) < k:
-                assistant_message = _generate(
-                    client, combined_prompt, model_name=model_name, temperature=0.7
+                sample_index = len(prompt_obj.output_prompts)
+                assistant_message = generate_sample(
+                    prompt_obj,
+                    combined_prompt,
+                    "filtered",
+                    sample_index,
+                    filtered_temperature,
                 )
                 prompt_obj.output_prompts.append(assistant_message)
 
@@ -122,3 +180,8 @@ def assign_outputs(
                 prompt_obj.direct_output = ""
             if not getattr(prompt_obj, "output_prompts", None):
                 prompt_obj.output_prompts = []
+        else:
+            prompt_obj.metadata.pop("api_error", None)
+            prompt_obj.metadata["valid_llm_response"] = True
+
+    return new_records

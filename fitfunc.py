@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+import statistics
 from collections import Counter
 from typing import Dict, List
 
@@ -220,6 +221,13 @@ def evaluate_fitness(
                 beta,
                 mr_objective=mr_objective,
             )
+            p.metrics["sample_count"] = float(len(asv_vals))
+            p.metrics["asv_std"] = (
+                float(statistics.pstdev(asv_vals)) if len(asv_vals) > 1 else 0.0
+            )
+            p.metrics["mr_std"] = (
+                float(statistics.pstdev(mr_vals)) if len(mr_vals) > 1 else 0.0
+            )
             print(
                 f"[{i}] ASV={asv_i:.3f} MR={mr_i:.3f} "
                 f"MR_OBJ={p.metrics['mr_component']:.3f} fitness={p.fitness:.3f}"
@@ -285,6 +293,15 @@ def evaluate_fitness_bertscore(
             alpha,
             beta,
             mr_objective=mr_objective,
+        )
+        asv_values = [float(value) for value in f1_asv.tolist()]
+        mr_values = [float(value) for value in f1_mr.tolist()]
+        p.metrics["sample_count"] = float(len(cand_list))
+        p.metrics["asv_std"] = (
+            float(statistics.pstdev(asv_values)) if len(asv_values) > 1 else 0.0
+        )
+        p.metrics["mr_std"] = (
+            float(statistics.pstdev(mr_values)) if len(mr_values) > 1 else 0.0
         )
 
 

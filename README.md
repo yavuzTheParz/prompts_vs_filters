@@ -94,6 +94,27 @@ python run_es.py \
   --generations 10
 ```
 
+Real runs default to three filtered samples per prompt; dry-runs default to one.
+The prompt-specific direct baseline is deterministic by default
+(`--direct-temperature 0`), while filtered sampling uses
+`--filtered-temperature 0.7`. Override the sampling policy explicitly when
+needed:
+
+```bash
+python run_es.py \
+  --base-url http://127.0.0.1:8000 \
+  --k-evals 3 \
+  --direct-temperature 0 \
+  --filtered-temperature 0.7 \
+  --max-sample-retries 2
+```
+
+Every valid or invalid attempt is recorded with its generation, sample index,
+temperature, attempt number, and status in `samples.jsonl`. For K greater than
+one, fitness metrics include `sample_count`, `asv_std`, and `mr_std`. Exhausted
+retries mark the individual invalid; failed samples never receive optimistic
+fitness.
+
 Alternatively, use environment variables:
 
 ```bash
@@ -152,7 +173,9 @@ python run_es.py \
 
 If `--benign-csv` is omitted, a small built-in benign sanity set is used. For real experiments, provide a representative benign set so the filter cannot improve by refusing everything.
 
-When `--run-dir` is set, the run directory stores `config.json`, `generation_summary.csv`, `filter_events.jsonl`, `filter_versions.jsonl`, `final_filter_prompt.txt`, `individuals.jsonl`, `outputs.jsonl`, and `final_population.csv`.
+When `--run-dir` is set, the run directory stores `config.json`,
+`generation_summary.csv`, `filter_events.jsonl`, `filter_versions.jsonl`,
+`final_filter_prompt.txt`, `outputs.jsonl`, and `samples.jsonl`.
 
 Local LLM filter-evolution integration test:
 

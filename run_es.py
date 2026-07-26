@@ -70,6 +70,9 @@ def write_history_csv(path: str, history):
         "best_mr",
         "best_behavioral_deviation",
         "best_mr_component",
+        "best_asv_std",
+        "best_mr_std",
+        "best_sample_count",
         "best_fluency",
         "best_diversity",
         "best_length_penalty",
@@ -152,6 +155,7 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     _write_jsonl(root / "filter_events.jsonl", getattr(result, "filter_events", []))
     _write_jsonl(root / "filter_versions.jsonl", getattr(result, "filter_versions", []))
     _write_jsonl(root / "outputs.jsonl", _final_population_output_rows(result))
+    _write_jsonl(root / "samples.jsonl", getattr(result, "sample_records", []))
 
 
 def parse_args():
@@ -195,9 +199,15 @@ def parse_args():
                         help="Run without an LLM server or heavy ML dependencies")
 
     # --- K-times stochastic evaluation (Gap 3 fix) ---
-    parser.add_argument("--k-evals", type=int, default=1,
+    parser.add_argument("--k-evals", type=int, default=None,
                         help="Number of stochastic attacked responses sampled per prompt per generation. "
-                             "Higher values reduce noise in ASV/MR estimates (proposal recommends ≥3).")
+                             "Defaults to 3 for real runs and 1 for dry-runs.")
+    parser.add_argument("--direct-temperature", type=float, default=0.0,
+                        help="Temperature for the prompt-specific direct baseline.")
+    parser.add_argument("--filtered-temperature", type=float, default=0.7,
+                        help="Temperature for filtered response sampling.")
+    parser.add_argument("--max-sample-retries", type=int, default=2,
+                        help="Retries after a failed or empty model sample.")
 
     # --- Filter coevolution (Gap 2 fix — previously hidden in ESConfig) ---
     parser.add_argument("--filter-update-every", type=int, default=0,
@@ -226,14 +236,18 @@ def parse_args():
     return parser.parse_args()
 
 
+def _resolve_cli_k_evals(requested: Optional[int], dry_run: bool) -> int:
+    if requested is None:
+        return 1 if dry_run else 3
+    return max(1, int(requested))
+
+
 def main():
     args = parse_args()
     args.mr_objective = normalize_mr_objective(args.mr_objective)
 
-    # Propagate k-evals to the environment so run_llm.assign_outputs picks it up
-    os.environ["PROMPTS_VS_FILTERS_K_EVALS"] = str(max(1, int(args.k_evals or 1)))
-
     client = build_client(args)
+    args.k_evals = _resolve_cli_k_evals(args.k_evals, args.dry_run)
 
     config = ESConfig(
         lambda_=args.lambda_,
@@ -257,6 +271,10 @@ def main():
         top_k_filter=args.top_k_filter,
         benign_csv_path=args.benign_csv,
         max_filter_chars=args.max_filter_chars,
+        k_evals=args.k_evals,
+        direct_temperature=args.direct_temperature,
+        filtered_temperature=args.filtered_temperature,
+        max_sample_retries=max(0, args.max_sample_retries),
     )
 
     result = evolutionary_strategy_run(
@@ -286,7 +304,9 @@ def main():
     print(f"Final filter length:  {len(result.filter_prompt)} chars")
     print(f"Filter update events: {len(getattr(result, 'filter_events', []))}")
     print(f"Accepted filter vers: {max(0, len(getattr(result, 'filter_versions', [])) - 1)}")
-    print(f"K evals per prompt:   {max(1, int(args.k_evals or 1))}")
+    print(f"K evals per prompt:   {args.k_evals}")
+    print(f"Direct temperature:   {args.direct_temperature:.3f}")
+    print(f"Filtered temperature: {args.filtered_temperature:.3f}")
     if args.history_csv:
         print(f"History CSV:          {args.history_csv}")
     if args.run_dir:

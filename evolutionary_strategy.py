@@ -54,6 +54,10 @@ class ESConfig:
     top_k_filter: int = 5
     benign_csv_path: Optional[str] = None
     max_filter_chars: int = 4000
+    k_evals: int = 1
+    direct_temperature: float = 0.0
+    filtered_temperature: float = 0.7
+    max_sample_retries: int = 2
 
     style_selection: str = "random"
     mutation_styles: Tuple[str, ...] = ("imperative", "plea")
@@ -70,6 +74,7 @@ class ESRunResult:
     history: List[Dict[str, float]] = field(default_factory=list)
     filter_events: List[Dict[str, Any]] = field(default_factory=list)
     filter_versions: List[Dict[str, Any]] = field(default_factory=list)
+    sample_records: List[Dict[str, Any]] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------
@@ -335,6 +340,8 @@ def _mutate_prompt(
     child.output_prompts = []
     child.metrics = {}
     child.fitness = 0.0
+    for key in ("api_error", "valid_llm_response", "sample_records"):
+        child.metadata.pop(key, None)
     return child, logs
 
 
@@ -398,6 +405,10 @@ def _evaluate_population(
     model_name: str,
     evaluator: FitnessEvaluator,
     lightweight: bool = False,
+    *,
+    config: Optional[ESConfig] = None,
+    generation: int = 0,
+    sample_records: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     unevaluated = [p for p in population if not p.output_prompts]
     if unevaluated:
@@ -405,10 +416,49 @@ def _evaluate_population(
             for prompt in unevaluated:
                 if not prompt.direct_output:
                     prompt.direct_output = f"Dry-run direct response for: {prompt.input_prompt}"
-                prompt.output_prompts.append(f"Dry-run filtered response for: {prompt.input_prompt}")
+                    direct_record = {
+                        "generation": generation,
+                        "input_prompt": prompt.input_prompt,
+                        "kind": "direct",
+                        "sample_index": 0,
+                        "attempt": 1,
+                        "status": "valid",
+                        "temperature": 0.0,
+                        "text": prompt.direct_output,
+                    }
+                    prompt.metadata.setdefault("sample_records", []).append(direct_record)
+                    if sample_records is not None:
+                        sample_records.append(direct_record)
+                filtered_text = f"Dry-run filtered response for: {prompt.input_prompt}"
+                prompt.output_prompts.append(filtered_text)
+                filtered_record = {
+                    "generation": generation,
+                    "input_prompt": prompt.input_prompt,
+                    "kind": "filtered",
+                    "sample_index": 0,
+                    "attempt": 1,
+                    "status": "valid",
+                    "temperature": 0.0,
+                    "text": filtered_text,
+                }
+                prompt.metadata.setdefault("sample_records", []).append(filtered_record)
+                if sample_records is not None:
+                    sample_records.append(filtered_record)
         else:
             from run_llm import assign_outputs
-            assign_outputs(filter_prompt, unevaluated, client, model_name=model_name)
+            generated_records = assign_outputs(
+                filter_prompt,
+                unevaluated,
+                client,
+                model_name=model_name,
+                k_evals=config.k_evals if config else None,
+                direct_temperature=config.direct_temperature if config else 0.0,
+                filtered_temperature=config.filtered_temperature if config else 0.7,
+                max_sample_retries=config.max_sample_retries if config else 2,
+                generation=generation,
+            )
+            if sample_records is not None:
+                sample_records.extend(generated_records)
     if lightweight:
         _lightweight_evaluator(
             population,
@@ -453,6 +503,9 @@ def _history_metrics(
         # FIX: add behavioral_deviation to history so convergence plots show the correct objective
         "best_behavioral_deviation": _metric(best, "behavioral_deviation"),
         "best_mr_component": _metric(best, "mr_component"),
+        "best_asv_std": _metric(best, "asv_std"),
+        "best_mr_std": _metric(best, "mr_std"),
+        "best_sample_count": _metric(best, "sample_count"),
         "best_fluency": _metric(best, "fluency"),
         "best_diversity": _metric(best, "diversity"),
         "best_length_penalty": _metric(best, "length_penalty"),
@@ -642,7 +695,18 @@ def evolutionary_strategy_run(
     parents = [_clone_prompt(p, keep_outputs=False) for p in parents]
 
     start = time.time()
-    _evaluate_population(parents, filter_prompt, client, model_name, evaluator, config.lightweight)
+    sample_records: List[Dict[str, Any]] = []
+    _evaluate_population(
+        parents,
+        filter_prompt,
+        client,
+        model_name,
+        evaluator,
+        config.lightweight,
+        config=config,
+        generation=0,
+        sample_records=sample_records,
+    )
     parents = _sort_best_first(parents, config)
     best = _clone_prompt(parents[0], keep_outputs=True)
 
@@ -722,7 +786,17 @@ def evolutionary_strategy_run(
             offspring.append(child)
             offspring_parent_indices.append(parent_idx)
 
-        _evaluate_population(offspring, filter_prompt, client, model_name, evaluator, config.lightweight)
+        _evaluate_population(
+            offspring,
+            filter_prompt,
+            client,
+            model_name,
+            evaluator,
+            config.lightweight,
+            config=config,
+            generation=generation,
+            sample_records=sample_records,
+        )
 
         successes = sum(
             1 for child, p_idx in zip(offspring, offspring_parent_indices)
@@ -831,6 +905,7 @@ def evolutionary_strategy_run(
         history=history,
         filter_events=filter_events,
         filter_versions=filter_versions,
+        sample_records=sample_records,
     )
 
 

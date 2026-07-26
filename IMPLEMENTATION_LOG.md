@@ -144,3 +144,49 @@ Both canonical modes completed a one-generation, fixed-seed dry-run with
 lexicographic selection. Their console summaries and `config.json` files
 recorded the expected mode and formula. Temporary validation artifacts were
 kept outside the repository.
+
+## T3 - Reduce Stochastic Evaluation Noise
+
+- Status: Complete
+- Date: 2026-07-26
+- Real-run filtered-sample default: `k_evals=3`
+- Dry-run filtered-sample default: `k_evals=1`
+- Direct baseline default: deterministic at temperature `0`
+
+### Changes
+
+- Added separate direct and filtered temperatures plus configurable
+  sample-level retries.
+- Rejected empty model responses and recorded every valid/invalid attempt with
+  prompt, generation, sample index, attempt, temperature, status, and response
+  or error.
+- Added `samples.jsonl` to structured run artifacts.
+- Added per-prompt sample count and population-standard-deviation metrics for
+  ASV and MR.
+- Ensured exhausted retries set invalid metadata so failed samples receive zero
+  selectable fitness.
+- Added K=3 call-count/averaging tests, transient retry coverage, invalid empty
+  response coverage, and fixed-seed reproducibility coverage.
+
+### Validation
+
+Targeted sampling and artifact tests:
+
+```bash
+python3 -B -m unittest tests.test_run_llm tests.test_run_es -v
+```
+
+Result: 7 tests passed.
+
+Full unit-test suite:
+
+```bash
+python3 -B -m unittest discover -s tests -v
+```
+
+Result: 30 tests passed; 1 opt-in local-LLM integration test was skipped because
+no local model endpoint was configured.
+
+A one-generation fixed-seed CLI dry-run confirmed the inexpensive K=1 dry-run
+default, separate temperatures, and sample records spanning generations 0 and
+1. Temporary validation artifacts were kept outside the repository.
