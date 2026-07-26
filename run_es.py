@@ -131,6 +131,11 @@ def _final_population_output_rows(result):
                     "output_index": output_index,
                     "output_text": output_text or "",
                     "fitness": float(getattr(prompt, "fitness", 0.0) or 0.0),
+                    "filter_version": int(
+                        (getattr(prompt, "metadata", {}) or {}).get(
+                            "filter_version", 0
+                        )
+                    ),
                     "metrics": metrics,
                     "attack_evaluator": dict(
                         (getattr(prompt, "metadata", {}) or {}).get(
@@ -164,6 +169,9 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
             "definition": mr_direction_description(config.mr_objective),
         },
         "attack_evaluator": DefensiveComplianceEvaluator().metadata(),
+        "filter_mode": (
+            "coevolution" if config.filter_update_every > 0 else "fixed_filter"
+        ),
     }
     (root / "config.json").write_text(
         json.dumps(config_payload, indent=2, ensure_ascii=False),

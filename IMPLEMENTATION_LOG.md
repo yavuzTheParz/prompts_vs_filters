@@ -341,3 +341,33 @@ python3 -B -m unittest discover -s tests -v
 Result: 3 focused survival/distribution tests passed; the full suite passed 45
 tests with 1 opt-in integration test skipped. Fixed-seed plus and comma dry-runs
 both completed and recorded the selected survival schema in `config.json`.
+
+## T8 - Re-evaluate Population After Filter Updates
+
+- Status: Complete
+- Date: 2026-07-26
+
+### Changes
+
+- Tagged every evaluation, sample, final-population row, and selected parent
+  with a filter version.
+- On accepted filter updates, invalidated active parents' filtered outputs,
+  fitness, metrics, and evaluator cache while preserving direct baselines.
+- Re-evaluated and re-ranked every active parent under the new filter before
+  continuing.
+- Reset the comparable best candidate after version changes so stale/current
+  filter scores are never compared.
+- Added old/new filter-version lineage to accepted update events.
+- Prevented rejected updates from triggering re-evaluation.
+- Added explicit `fixed_filter`/`coevolution` run metadata.
+
+### Validation
+
+```bash
+python3 -B -m unittest \
+  tests.test_filter_reevaluation tests.test_core_behaviour -v
+python3 -B -m unittest discover -s tests -v
+```
+
+Result: 4 targeted filter-version tests passed; the full suite passed 49 tests
+with 1 opt-in integration test skipped.

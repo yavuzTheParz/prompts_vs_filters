@@ -421,6 +421,7 @@ def _evaluate_population(
     config: Optional[ESConfig] = None,
     generation: int = 0,
     sample_records: Optional[List[Dict[str, Any]]] = None,
+    filter_version: int = 0,
 ) -> None:
     unevaluated = [p for p in population if not p.output_prompts]
     if unevaluated:
@@ -430,6 +431,7 @@ def _evaluate_population(
                     prompt.direct_output = f"Dry-run direct response for: {prompt.input_prompt}"
                     direct_record = {
                         "generation": generation,
+                        "filter_version": filter_version,
                         "input_prompt": prompt.input_prompt,
                         "kind": "direct",
                         "sample_index": 0,
@@ -445,6 +447,7 @@ def _evaluate_population(
                 prompt.output_prompts.append(filtered_text)
                 filtered_record = {
                     "generation": generation,
+                    "filter_version": filter_version,
                     "input_prompt": prompt.input_prompt,
                     "kind": "filtered",
                     "sample_index": 0,
@@ -468,6 +471,7 @@ def _evaluate_population(
                 filtered_temperature=config.filtered_temperature if config else 0.7,
                 max_sample_retries=config.max_sample_retries if config else 2,
                 generation=generation,
+                filter_version=filter_version,
             )
             if sample_records is not None:
                 sample_records.extend(generated_records)
@@ -483,6 +487,23 @@ def _evaluate_population(
         max_prompt_chars=config.max_prompt_chars if config else 2000,
         max_repetition=config.max_repetition if config else 0.55,
     )
+    for prompt in population:
+        prompt.metadata["filter_version"] = int(filter_version)
+
+
+def _invalidate_for_filter_update(population: List[Prompt]) -> None:
+    for prompt in population:
+        prompt.output_prompts = []
+        prompt.metrics = {}
+        prompt.fitness = 0.0
+        for key in (
+            "api_error",
+            "valid_llm_response",
+            "attack_evaluations",
+            "attack_evaluator",
+            "attack_evaluator_error",
+        ):
+            prompt.metadata.pop(key, None)
 
 
 def _survival_plus(parents: List[Prompt], offspring: List[Prompt], mu: int, config: ESConfig) -> List[Prompt]:
@@ -768,6 +789,7 @@ def evolutionary_strategy_run(
         config=config,
         generation=0,
         sample_records=sample_records,
+        filter_version=0,
     )
     parents = _sort_best_first(parents, config)
     if variant == "cma_es":
@@ -792,6 +814,7 @@ def evolutionary_strategy_run(
         }
     ]
     sigma_global = float(config.sigma)
+    current_filter_version = 0
 
     for generation in range(1, config.generations + 1):
         offspring: List[Prompt] = []
@@ -863,6 +886,7 @@ def evolutionary_strategy_run(
             config=config,
             generation=generation,
             sample_records=sample_records,
+            filter_version=current_filter_version,
         )
 
         successes = sum(
@@ -926,9 +950,10 @@ def evolutionary_strategy_run(
         if filter_event is not None:
             filter_events.append(filter_event)
             if filter_event.get("filter_changed"):
+                current_filter_version += 1
                 filter_versions.append(
                     {
-                        "version": len(filter_versions),
+                        "version": current_filter_version,
                         "generation": generation,
                         "reason": "accepted_filter_update",
                         "proposed_rule": filter_event.get("proposed_rule", ""),
@@ -936,6 +961,23 @@ def evolutionary_strategy_run(
                         "filter_prompt": filter_prompt,
                     }
                 )
+                filter_event["old_filter_version"] = current_filter_version - 1
+                filter_event["new_filter_version"] = current_filter_version
+                _invalidate_for_filter_update(parents)
+                _evaluate_population(
+                    parents,
+                    filter_prompt,
+                    client,
+                    model_name,
+                    evaluator,
+                    config.lightweight,
+                    config=config,
+                    generation=generation,
+                    sample_records=sample_records,
+                    filter_version=current_filter_version,
+                )
+                parents = _sort_best_first(parents, config)
+                best = _clone_prompt(parents[0], keep_outputs=True)
 
         history_row = _history_metrics(generation, best, parents, success_rate, sigma_report)
         if variant == "cma_es":

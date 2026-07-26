@@ -198,6 +198,12 @@ python run_es.py \
 
 If `--benign-csv` is omitted, a small built-in benign sanity set is used. For real experiments, provide a representative benign set so the filter cannot improve by refusing everything.
 
+Every evaluation and sample is tagged with a `filter_version`. When an update is
+accepted, active parents keep their unchanged direct baselines but lose stale
+filtered outputs and fitness, then are re-evaluated under the new version before
+the next selection. Rejected updates do not trigger re-evaluation. `config.json`
+labels runs as `fixed_filter` or `coevolution`.
+
 When `--run-dir` is set, the run directory stores `config.json`,
 `generation_summary.csv`, `filter_events.jsonl`, `filter_versions.jsonl`,
 `final_filter_prompt.txt`, `outputs.jsonl`, and `samples.jsonl`.

@@ -77,6 +77,7 @@ def assign_outputs(
     filtered_temperature: float = 0.7,
     max_sample_retries: int = 2,
     generation: int = 0,
+    filter_version: int = 0,
 ) -> List[Dict[str, object]]:
     """
     Populate Prompt.output_prompts and Prompt.direct_output.
@@ -109,6 +110,7 @@ def assign_outputs(
                     raise ValueError("empty model response")
                 record = {
                     "generation": int(generation),
+                    "filter_version": int(filter_version),
                     "input_prompt": prompt_obj.input_prompt,
                     "kind": kind,
                     "sample_index": int(sample_index),
@@ -124,6 +126,7 @@ def assign_outputs(
                 last_error = f"{type(exc).__name__}: {exc}"
                 record = {
                     "generation": int(generation),
+                    "filter_version": int(filter_version),
                     "input_prompt": prompt_obj.input_prompt,
                     "kind": kind,
                     "sample_index": int(sample_index),
