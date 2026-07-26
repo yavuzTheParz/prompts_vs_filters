@@ -196,6 +196,14 @@ The CSV contains:
 - filter_old_benign_refusal_rate
 - filter_new_benign_refusal_rate
 
+### Historical pilot compatibility
+
+Results generated before the mutated-child direct-baseline reset are pre-fix
+results. A mutated prompt could inherit its parent's `direct_output`, so its MR
+and behavioral-deviation values were not necessarily computed against a
+prompt-specific direct response. Do not compare those historical MR/BD values
+directly with post-fix runs.
+
 ## Ablation runner
 
 The lightweight ablation runner compares ES variants and selection modes across seeds:

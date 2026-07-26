@@ -169,7 +169,7 @@ def _clone_prompt(prompt: Prompt, *, keep_outputs: bool = False) -> Prompt:
         structure=prompt.structure,
         content=prompt.content,
         fitness=prompt.fitness if keep_outputs else 0.0,
-        direct_output=prompt.direct_output,
+        direct_output=prompt.direct_output if keep_outputs else "",
         metrics=dict(getattr(prompt, "metrics", {}) or {}) if keep_outputs else {},
         metadata=dict(getattr(prompt, "metadata", {}) or {}),
     )
@@ -326,7 +326,9 @@ def _mutate_prompt(
         child.input_prompt = new_text
         logs.append(log)
 
+    child.direct_output = ""
     child.output_prompts = []
+    child.metrics = {}
     child.fitness = 0.0
     return child, logs
 

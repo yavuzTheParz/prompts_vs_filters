@@ -52,3 +52,50 @@ The command was run twice. SHA-256 checksums for `config.json`,
   pattern scan; no operational weapon-building or procedural cyber-instruction
   pattern was detected. Historical artifacts were left unchanged.
 - Pre-existing untracked coevolution outputs were excluded from this task.
+
+## T1 - Reset Direct Baselines for Mutated Children
+
+- Status: Complete
+- Date: 2026-07-26
+- Algorithm behavior changed: Yes - mutated prompts now require a
+  prompt-specific direct baseline.
+
+### Changes
+
+- `_clone_prompt(..., keep_outputs=False)` no longer inherits `direct_output`.
+- Mutation explicitly clears the child's `direct_output`, `output_prompts`,
+  `metrics`, and `fitness` after changing its prompt text.
+- Added regression coverage for clone preservation, child reset, fresh direct
+  generation per child, and resume behavior.
+- Marked historical MR/behavioral-deviation pilot results as pre-fix and not
+  directly comparable with corrected runs.
+
+### Validation
+
+Targeted tests:
+
+```bash
+python3 -B -m unittest tests.test_evolutionary_strategy -v
+```
+
+Result: 5 tests passed.
+
+Full unit-test suite:
+
+```bash
+python3 -B -m unittest discover -s tests -v
+```
+
+Result: 18 tests passed; 1 opt-in local-LLM integration test was skipped because
+no local model endpoint was configured.
+
+Minimal dry-run validation:
+
+```bash
+python3 run_es.py --dry-run --variant cma_es --mu 2 --lambda 4 \
+  --generations 1 --seed 102 --history-csv /tmp/t1_history.csv \
+  --run-dir /tmp/t1_run
+```
+
+Result: completed one generation with best fitness `0.3700`. Temporary
+validation artifacts were kept outside the repository.
