@@ -283,6 +283,16 @@ Add `--with-filter-coevolution` to include the filter-update condition in dry-ru
 
 In the prompt project, the search space is discrete text. The CMA-ES variant therefore does not optimize text directly. It samples a small continuous control vector and maps it to mutation style and mutation intensity. `sigma` remains the base mutation intensity; `cma_step_size` and the learned covariance control exploration around style and intensity choices.
 
+## Structural mutation controls
+
+Structural style templates use explicit `STYLE_PREFIX` and `STYLE_SUFFIX` tags.
+A prompt can contain at most one active template in each position; applying a
+new template replaces the existing one. `TemplateManager` exposes configurable
+absolute and seed-relative character/token limits plus a repeated n-gram
+threshold. Exact duplicates and over-limit mutations are rejected with a
+reasoned mutation log. `compress_mutation()` removes tagged style material and
+adjacent repeated words.
+
 ## Legacy GA runner
 
 The legacy GA-style runner is still available:

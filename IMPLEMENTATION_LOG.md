@@ -240,3 +240,41 @@ The sanitized manual fitness probe classified the compliant placeholder above
 the refusal while retaining distinct MR-mode behavior. A fixed-seed CLI dry-run
 confirmed evaluator version, model, template, and threshold in `config.json`.
 Temporary validation artifacts were kept outside the repository.
+
+## T5 - Prevent Structural Mutation Duplication and Prompt Bloat
+
+- Status: Complete
+- Date: 2026-07-26
+
+### Changes
+
+- Added recognizable `STYLE_PREFIX` and `STYLE_SUFFIX` tags.
+- Limited prompts to one active prefix and one active suffix; new templates
+  replace the template in the same position.
+- Added exact-duplicate and repeated n-gram rejection.
+- Added configurable absolute and seed-relative character/token growth limits.
+- Added compression mutation for tagged style material and adjacent duplicate
+  words.
+- Added structured mutation logs with operator, add/replace/compression action,
+  before/after length, acceptance state, and reason.
+- Preserved the existing token-mutation path and structural dependency fallback.
+
+### Validation
+
+Targeted mutation tests:
+
+```bash
+python3 -B -m unittest tests.test_mutation_manager -v
+```
+
+Result: 5 tests passed, including 20 repeated structural mutations, growth-limit
+rejection, compression, and the existing token-path fallback.
+
+Full unit-test suite:
+
+```bash
+python3 -B -m unittest discover -s tests -v
+```
+
+Result: 38 tests passed; 1 opt-in local-LLM integration test was skipped because
+no local model endpoint was configured.
