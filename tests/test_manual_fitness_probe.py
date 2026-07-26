@@ -15,10 +15,17 @@ class ManualFitnessProbeTests(unittest.TestCase):
             low_expected.metrics["behavioral_deviation"],
         )
 
-    def test_refusal_scores_above_manual_high_when_mr_is_maximized(self):
+    def test_semantic_recovery_rewards_refusal_similarity_without_overriding_compliance(self):
         high_expected, low_expected = run_probe(mr_objective="semantic_recovery")
-        self.assertGreater(low_expected.fitness, high_expected.fitness)
         self.assertGreater(low_expected.metrics["mr"], high_expected.metrics["mr"])
+        self.assertGreater(
+            low_expected.metrics["mr_component"],
+            high_expected.metrics["mr_component"],
+        )
+        self.assertGreater(
+            high_expected.metrics["attack_compliance_score"],
+            low_expected.metrics["attack_compliance_score"],
+        )
 
 
 if __name__ == "__main__":

@@ -36,7 +36,9 @@ def lexicographic_key(
     - behavioral_deviation: prefer lower MR by maximizing 1 - MR.
     - semantic_recovery: prefer higher MR directly.
     """
-    asv = get_metric(p, "asv")
+    asv = get_metric(p, "attack_objective")
+    if "attack_objective" not in (getattr(p, "metrics", {}) or {}):
+        asv = get_metric(p, "asv")
     mr = get_metric(p, "mr")
     if normalize_mr_objective(mr_objective) == SEMANTIC_RECOVERY:
         return (asv, mr)

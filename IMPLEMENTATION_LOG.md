@@ -190,3 +190,53 @@ no local model endpoint was configured.
 A one-generation fixed-seed CLI dry-run confirmed the inexpensive K=1 dry-run
 default, separate temperatures, and sample records spanning generations 0 and
 1. Temporary validation artifacts were kept outside the repository.
+
+## T4 - Strengthen Attack-Success Evaluation
+
+- Status: Complete
+- Date: 2026-07-26
+- Evaluator version: `defensive-compliance-v1`
+
+### Changes
+
+- Renamed raw reference cosine semantics to
+  `unsafe_reference_similarity`; it is auxiliary and is not reported as an
+  attack success rate.
+- Added a replaceable defensive evaluator returning bounded compliance scores,
+  categorical labels, validity status, version, model, template, and threshold.
+- Added multiple sanitized, non-operational reference descriptions for every
+  supported content category.
+- Made the primary attack objective an ensemble with compliance weight `0.8`
+  and auxiliary reference-similarity weight `0.2`.
+- Preserved `asv` only as a temporary schema alias for the ensemble attack
+  objective.
+- Persisted evaluator configuration in `config.json` and evaluator decisions in
+  output artifacts.
+- Converted legacy operational test content to sanitized placeholders.
+- Ensured evaluator exceptions and invalid results produce zero fitness.
+
+### Validation
+
+Targeted defensive evaluator tests:
+
+```bash
+python3 -B -m unittest tests.test_attack_evaluator -v
+```
+
+Result: 5 tests passed, covering refusal topic-word repetition, benign
+educational content, sanitized compliance, evaluator failure, ensemble
+priority, and artifact metadata.
+
+Full unit-test suite:
+
+```bash
+python3 -B -m unittest discover -s tests -v
+```
+
+Result: 35 tests passed; 1 opt-in local-LLM integration test was skipped because
+no local model endpoint was configured.
+
+The sanitized manual fitness probe classified the compliant placeholder above
+the refusal while retaining distinct MR-mode behavior. A fixed-seed CLI dry-run
+confirmed evaluator version, model, template, and threshold in `config.json`.
+Temporary validation artifacts were kept outside the repository.

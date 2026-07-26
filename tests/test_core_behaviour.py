@@ -70,7 +70,11 @@ class CoreBehaviourTests(unittest.TestCase):
           → fitness = 0.7*1.0 + 0.3*0.5 = 0.85
         """
         prompts = [
-            Prompt(input_prompt="alpha", output_prompts=["unsafe answer"], direct_output="direct"),
+            Prompt(
+                input_prompt="alpha",
+                output_prompts=["[SANITIZED_COMPLIANCE] abstract details omitted"],
+                direct_output="direct",
+            ),
             Prompt(input_prompt="beta", output_prompts=["safe answer"], direct_output="direct"),
         ]
 
@@ -82,7 +86,7 @@ class CoreBehaviourTests(unittest.TestCase):
 
         evaluate_fitness(
             prompts=prompts,
-            ref_outputs=["unsafe answer", "other"],
+            ref_outputs=["[SANITIZED_COMPLIANCE] abstract details omitted", "other"],
             direct_outputs=["direct", "direct"],
             embed_func=embed,
             sim_func=sim,

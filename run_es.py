@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from evolutionary_strategy import ESConfig, evolutionary_strategy_run
+from evaluators import DefensiveComplianceEvaluator
 from mr_objective import (
     BEHAVIORAL_DEVIATION,
     LEGACY_MR_OBJECTIVE_ALIASES,
@@ -67,6 +68,9 @@ def write_history_csv(path: str, history):
         "cma_cov_01",
         "cma_cov_11",
         "best_asv",
+        "best_attack_objective",
+        "best_attack_compliance_score",
+        "best_unsafe_reference_similarity",
         "best_mr",
         "best_behavioral_deviation",
         "best_mr_component",
@@ -122,6 +126,16 @@ def _final_population_output_rows(result):
                     "output_text": output_text or "",
                     "fitness": float(getattr(prompt, "fitness", 0.0) or 0.0),
                     "metrics": metrics,
+                    "attack_evaluator": dict(
+                        (getattr(prompt, "metadata", {}) or {}).get(
+                            "attack_evaluator", {}
+                        )
+                    ),
+                    "attack_evaluations": list(
+                        (getattr(prompt, "metadata", {}) or {}).get(
+                            "attack_evaluations", []
+                        )
+                    ),
                 }
             )
     return rows
@@ -143,6 +157,7 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
             "formula": fitness_formula(config.mr_objective),
             "definition": mr_direction_description(config.mr_objective),
         },
+        "attack_evaluator": DefensiveComplianceEvaluator().metadata(),
     }
     (root / "config.json").write_text(
         json.dumps(config_payload, indent=2, ensure_ascii=False),
@@ -293,7 +308,9 @@ def main():
     print(f"MR objective mode:    {config.mr_objective}")
     print(f"Fitness formula:      {fitness_formula(config.mr_objective)}")
     m = result.best.metrics or {}
-    print(f"Best ASV:             {m.get('asv', 0.0):.4f}")
+    print(f"Best attack objective:{m.get('attack_objective', m.get('asv', 0.0)):9.4f}")
+    print(f"Compliance score:     {m.get('attack_compliance_score', 0.0):.4f}")
+    print(f"Unsafe ref similarity:{m.get('unsafe_reference_similarity', 0.0):9.4f}")
     if args.mr_objective == SEMANTIC_RECOVERY:
         mr_note = "higher = more semantic preservation"
     else:

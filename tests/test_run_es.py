@@ -73,6 +73,12 @@ class RunArtifactMRObjectiveTests(unittest.TestCase):
             payload["mr_objective"]["formula"],
             "fitness = 0.7 * ASV + 0.3 * MR",
         )
+        self.assertEqual(
+            payload["attack_evaluator"]["version"],
+            "defensive-compliance-v1",
+        )
+        self.assertIn("threshold", payload["attack_evaluator"])
+        self.assertIn("prompt_template", payload["attack_evaluator"])
         self.assertNotIn("api_key", payload["args"])
         self.assertTrue(samples)
         self.assertTrue(

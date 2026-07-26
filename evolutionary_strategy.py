@@ -379,6 +379,9 @@ def _lightweight_evaluator(
 
         p.metrics = {
             "asv": float(simulated_asv),
+            "attack_objective": float(simulated_asv),
+            "attack_compliance_score": float(simulated_asv),
+            "unsafe_reference_similarity": 0.0,
             "mr": float(simulated_mr),
             "behavioral_deviation": float(behavioral_deviation),
             "mr_component": float(selected_mr_component),
@@ -499,6 +502,11 @@ def _history_metrics(
         "success_rate": float(success_rate),
         "sigma": float(sigma),
         "best_asv": _metric(best, "asv"),
+        "best_attack_objective": _metric(best, "attack_objective"),
+        "best_attack_compliance_score": _metric(best, "attack_compliance_score"),
+        "best_unsafe_reference_similarity": _metric(
+            best, "unsafe_reference_similarity"
+        ),
         "best_mr": _metric(best, "mr"),
         # FIX: add behavioral_deviation to history so convergence plots show the correct objective
         "best_behavioral_deviation": _metric(best, "behavioral_deviation"),
