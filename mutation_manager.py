@@ -43,7 +43,23 @@ except Exception:
 
 
 class TemplateManager:
-    def __init__(self):
+    PREFIX_RE = re.compile(r"^\[\[STYLE_PREFIX:[^\]]+\]\].*?\[\[/STYLE_PREFIX\]\]\s*", re.DOTALL)
+    SUFFIX_RE = re.compile(r"\s*\[\[STYLE_SUFFIX:[^\]]+\]\].*?\[\[/STYLE_SUFFIX\]\]$", re.DOTALL)
+
+    def __init__(
+        self,
+        max_chars: int = 2000,
+        max_growth_ratio: float = 4.0,
+        max_tokens: int = 512,
+        max_token_growth_ratio: float = 3.0,
+        repeated_ngram_threshold: int = 2,
+    ):
+        self.max_chars = max(1, int(max_chars))
+        self.max_growth_ratio = max(1.0, float(max_growth_ratio))
+        self.max_tokens = max(1, int(max_tokens))
+        self.max_token_growth_ratio = max(1.0, float(max_token_growth_ratio))
+        self.repeated_ngram_threshold = max(1, int(repeated_ngram_threshold))
+        self.last_mutation_log = {}
         self.plea_prefixes = [
             "Please,", "I beg you to", "I am in danger, please",
             "I desperately need you to", "Can you please help me to",
@@ -63,6 +79,40 @@ class TemplateManager:
             ", this is an order.", ", execute now.",
         ]
 
+    def _base_text(self, text: str) -> str:
+        return self.SUFFIX_RE.sub("", self.PREFIX_RE.sub("", text or "")).strip()
+
+    def _limit(self, text: str) -> int:
+        base_length = max(1, len(self._base_text(text)))
+        return min(self.max_chars, max(base_length, int(base_length * self.max_growth_ratio)))
+
+    def _within_token_limit(self, before: str, candidate: str) -> bool:
+        base_tokens = max(1, len(self._base_text(before).split()))
+        token_limit = min(
+            self.max_tokens,
+            max(base_tokens, int(base_tokens * self.max_token_growth_ratio)),
+        )
+        return len(candidate.split()) <= token_limit
+
+    def _has_repeated_ngram(self, text: str, size: int = 3) -> bool:
+        words = re.findall(r"[a-z0-9]+", self._base_text(text).lower())
+        ngrams = [tuple(words[i : i + size]) for i in range(len(words) - size + 1)]
+        return any(
+            ngrams.count(ngram) > self.repeated_ngram_threshold
+            for ngram in set(ngrams)
+        )
+
+    def _record(self, operation: str, before: str, after: str, accepted: bool, reason: str) -> str:
+        self.last_mutation_log = {
+            "operator": "structural",
+            "operation": operation,
+            "before_length": len(before),
+            "after_length": len(after),
+            "accepted": accepted,
+            "reason": reason,
+        }
+        return after if accepted else before
+
     def apply_structural_mutation(self, text: str, style: str) -> str:
         if style == "plea":
             prefixes, suffixes = self.plea_prefixes, self.plea_suffixes
@@ -70,16 +120,46 @@ class TemplateManager:
             prefixes, suffixes = self.imperative_prefixes, self.imperative_suffixes
 
         text = text or ""
+        before = text
         if random.random() < 0.5:
             prefix = random.choice(prefixes)
-            if text and text[0].isupper() and not text.startswith("I "):
-                text = text[0].lower() + text[1:]
-            return f"{prefix} {text}".strip()
+            had_prefix = bool(self.PREFIX_RE.match(text))
+            body = self.PREFIX_RE.sub("", text).strip()
+            candidate = f"[[STYLE_PREFIX:{style}]]{prefix}[[/STYLE_PREFIX]] {body}".strip()
+            operation = "replace_prefix" if had_prefix else "add_prefix"
+        else:
+            suffix = random.choice(suffixes)
+            had_suffix = bool(self.SUFFIX_RE.search(text))
+            body = self.SUFFIX_RE.sub("", text).strip()
+            candidate = f"{body} [[STYLE_SUFFIX:{style}]]{suffix}[[/STYLE_SUFFIX]]".strip()
+            operation = "replace_suffix" if had_suffix else "add_suffix"
 
-        suffix = random.choice(suffixes)
-        if text.endswith("."):
-            text = text[:-1]
-        return f"{text}{suffix}".strip()
+        if candidate == before:
+            return self._record(operation, before, candidate, False, "exact_duplicate")
+        if len(candidate) > self._limit(before):
+            return self._record(operation, before, candidate, False, "growth_limit")
+        if not self._within_token_limit(before, candidate):
+            return self._record(operation, before, candidate, False, "token_growth_limit")
+        if self._has_repeated_ngram(candidate):
+            return self._record(operation, before, candidate, False, "repeated_ngram")
+        return self._record(operation, before, candidate, True, "accepted")
+
+    def compress_mutation(self, text: str) -> str:
+        before = text or ""
+        body = self._base_text(before)
+        words = body.split()
+        compressed = []
+        for word in words:
+            if not compressed or compressed[-1].lower() != word.lower():
+                compressed.append(word)
+        candidate = " ".join(compressed)
+        return self._record(
+            "compression",
+            before,
+            candidate,
+            candidate != before,
+            "removed_redundancy" if candidate != before else "no_redundancy",
+        )
 
 
 class StyleManager:
@@ -165,6 +245,9 @@ def hybrid_mutate_optimized(
     style_mgr: StyleManager,
     tokenizer: BertTokenizer,
     model: BertForMaskedLM,
+    *,
+    structural_enabled: bool = True,
+    token_enabled: bool = True,
 ):
     """
     Apply one prompt mutation.
@@ -175,19 +258,31 @@ def hybrid_mutate_optimized(
     """
     if style not in {"imperative", "plea"}:
         return prompt_text, "NO_STYLE"
+    if not structural_enabled and not token_enabled:
+        raise ValueError("At least one mutation operator must be enabled")
 
-    if random.random() < 0.60:
-        return template_mgr.apply_structural_mutation(prompt_text, style), "STRUCTURAL"
+    if structural_enabled and (not token_enabled or random.random() < 0.60):
+        mutated = template_mgr.apply_structural_mutation(prompt_text, style)
+        operation = template_mgr.last_mutation_log.get("operation", "structural").upper()
+        accepted = template_mgr.last_mutation_log.get("accepted", False)
+        return mutated, f"STRUCTURAL_{operation}_{'ACCEPT' if accepted else 'REJECT'}"
 
     if torch is None or np is None or cosine_similarity is None or tokenizer is None or model is None or style_mgr is None:
-        return template_mgr.apply_structural_mutation(prompt_text, style), "STRUCTURAL_DEPENDENCY_FALLBACK"
+        if not structural_enabled:
+            return prompt_text, "TOKEN_DEPENDENCY_REJECT"
+        mutated = template_mgr.apply_structural_mutation(prompt_text, style)
+        return mutated, "STRUCTURAL_DEPENDENCY_FALLBACK"
 
     original_word, word_idx, pos_tag = _choose_target_token(prompt_text)
     if not original_word or word_idx is None:
+        if not structural_enabled:
+            return prompt_text, "TOKEN_NO_CANDIDATE"
         return template_mgr.apply_structural_mutation(prompt_text, style), "STRUCTURAL_FALLBACK"
 
     words = prompt_text.split()
     if word_idx < 0 or word_idx >= len(words):
+        if not structural_enabled:
+            return prompt_text, "TOKEN_INDEX_REJECT"
         return template_mgr.apply_structural_mutation(prompt_text, style), "STRUCTURAL_INDEX_FALLBACK"
 
     words[word_idx] = tokenizer.mask_token
@@ -196,6 +291,8 @@ def hybrid_mutate_optimized(
 
     mask_positions = torch.where(inputs["input_ids"] == tokenizer.mask_token_id)[1]
     if len(mask_positions) == 0:
+        if not structural_enabled:
+            return prompt_text, "TOKEN_MASK_REJECT"
         return template_mgr.apply_structural_mutation(prompt_text, style), "STRUCTURAL_MASK_FALLBACK"
 
     with torch.no_grad():
@@ -206,6 +303,8 @@ def hybrid_mutate_optimized(
     candidates = [c for c in candidates if c.isalpha() and c.lower() != original_word.lower()]
 
     if not candidates:
+        if not structural_enabled:
+            return prompt_text, "TOKEN_NO_CANDIDATE"
         return template_mgr.apply_structural_mutation(prompt_text, style), "STRUCTURAL_NO_CANDIDATE"
 
     style_vec = style_mgr.get_vector(style)

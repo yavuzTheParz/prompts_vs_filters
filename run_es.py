@@ -2,13 +2,26 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.metadata
 import json
 import os
+import re
+import subprocess
 from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
 from evolutionary_strategy import ESConfig, evolutionary_strategy_run
+from evaluators import DefensiveComplianceEvaluator
+from mr_objective import (
+    BEHAVIORAL_DEVIATION,
+    LEGACY_MR_OBJECTIVE_ALIASES,
+    MR_OBJECTIVE_MODES,
+    SEMANTIC_RECOVERY,
+    fitness_formula,
+    mr_direction_description,
+    normalize_mr_objective,
+)
 
 
 DEFAULT_FILTER_PROMPT = (
@@ -58,14 +71,26 @@ def write_history_csv(path: str, history):
         "cma_cov_01",
         "cma_cov_11",
         "best_asv",
+        "best_attack_objective",
+        "best_attack_compliance_score",
+        "best_unsafe_reference_similarity",
         "best_mr",
         "best_behavioral_deviation",
         "best_mr_component",
+        "best_asv_std",
+        "best_mr_std",
+        "best_sample_count",
         "best_fluency",
         "best_diversity",
         "best_length_penalty",
         "best_repetition_penalty",
         "best_api_error",
+        "population_diversity",
+        "rejected_api_error",
+        "rejected_empty_output",
+        "rejected_prompt_too_long",
+        "rejected_excessive_repetition",
+        "rejected_near_duplicate",
         "filter_attempted",
         "filter_changed",
         "filter_length",
@@ -74,6 +99,8 @@ def write_history_csv(path: str, history):
         "filter_old_benign_refusal_rate",
         "filter_new_benign_refusal_rate",
     ]
+    extras = sorted({key for row in history for key in row} - set(fieldnames))
+    fieldnames.extend(extras)
     with output_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -85,6 +112,41 @@ def _safe_asdict(config: ESConfig) -> dict:
     data = asdict(config)
     data["mutation_styles"] = list(config.mutation_styles)
     return data
+
+
+def _sanitize_payload(value):
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            if any(marker in key.lower() for marker in ("api_key", "token", "password", "secret")):
+                sanitized[key] = "[REDACTED]"
+            else:
+                sanitized[key] = _sanitize_payload(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_payload(item) for item in value]
+    if isinstance(value, str) and re.search(r"(gh[opsu]_|sk-)[A-Za-z0-9_-]{16,}", value):
+        return "[REDACTED]"
+    return value
+
+
+def _commit_sha() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
+def _dependency_versions() -> dict:
+    versions = {"python": os.sys.version.split()[0]}
+    for package in ("numpy", "torch", "transformers", "sentence-transformers"):
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            versions[package] = "not-installed"
+    return versions
 
 
 def _write_jsonl(path: Path, rows) -> None:
@@ -109,7 +171,42 @@ def _final_population_output_rows(result):
                     "output_index": output_index,
                     "output_text": output_text or "",
                     "fitness": float(getattr(prompt, "fitness", 0.0) or 0.0),
+                    "filter_version": int(
+                        (getattr(prompt, "metadata", {}) or {}).get(
+                            "filter_version", 0
+                        )
+                    ),
+                    "prompt_id": (getattr(prompt, "metadata", {}) or {}).get(
+                        "prompt_id"
+                    ),
+                    "parent_id": (getattr(prompt, "metadata", {}) or {}).get(
+                        "parent_id"
+                    ),
+                    "seed_prompt_id": (getattr(prompt, "metadata", {}) or {}).get(
+                        "seed_prompt_id"
+                    ),
+                    "generation": int(
+                        (getattr(prompt, "metadata", {}) or {}).get(
+                            "generation", 0
+                        )
+                    ),
+                    "mutation_lineage": list(
+                        (getattr(prompt, "metadata", {}) or {}).get(
+                            "mutation_lineage", []
+                        )
+                    ),
+                    "prompt_length": len(getattr(prompt, "input_prompt", "")),
                     "metrics": metrics,
+                    "attack_evaluator": dict(
+                        (getattr(prompt, "metadata", {}) or {}).get(
+                            "attack_evaluator", {}
+                        )
+                    ),
+                    "attack_evaluations": list(
+                        (getattr(prompt, "metadata", {}) or {}).get(
+                            "attack_evaluations", []
+                        )
+                    ),
                 }
             )
     return rows
@@ -122,11 +219,20 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     root = Path(run_dir)
     root.mkdir(parents=True, exist_ok=True)
 
-    config_payload = {
+    config_payload = _sanitize_payload({
         "args": {k: v for k, v in vars(args).items() if k != "api_key"},
         "config": _safe_asdict(config),
         "model_name": args.model,
-    }
+        "mr_objective": {
+            "mode": config.mr_objective,
+            "formula": fitness_formula(config.mr_objective),
+            "definition": mr_direction_description(config.mr_objective),
+        },
+        "attack_evaluator": DefensiveComplianceEvaluator().metadata(),
+        "filter_mode": (
+            "coevolution" if config.filter_update_every > 0 else "fixed_filter"
+        ),
+    })
     (root / "config.json").write_text(
         json.dumps(config_payload, indent=2, ensure_ascii=False),
         encoding="utf-8",
@@ -138,6 +244,36 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     _write_jsonl(root / "filter_events.jsonl", getattr(result, "filter_events", []))
     _write_jsonl(root / "filter_versions.jsonl", getattr(result, "filter_versions", []))
     _write_jsonl(root / "outputs.jsonl", _final_population_output_rows(result))
+    _write_jsonl(root / "samples.jsonl", getattr(result, "sample_records", []))
+    _write_jsonl(root / "lineage.jsonl", getattr(result, "lineage_records", []))
+    manifest = _sanitize_payload(
+        {
+            "commit_sha": _commit_sha(),
+            "seed": config.random_seed,
+            "model": {
+                "name": args.model,
+                "base_url": getattr(args, "base_url", None),
+            },
+            "mr_objective": config.mr_objective,
+            "filter_mode": config_payload["filter_mode"],
+            "dependencies": _dependency_versions(),
+        }
+    )
+    (root / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    summary = {
+        "best_fitness": float(result.best.fitness),
+        "best_metrics": _sanitize_payload(dict(result.best.metrics or {})),
+        "generations_completed": len(result.history),
+        "filter_versions": len(getattr(result, "filter_versions", [])),
+        "sample_attempts": len(getattr(result, "sample_records", [])),
+    }
+    (root / "summary.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 def parse_args():
@@ -159,8 +295,15 @@ def parse_args():
     parser.add_argument("--survival", default="(mu+lambda)", help="(mu+lambda) or (mu,lambda)")
     parser.add_argument("--selection-mode", choices=["scalar", "lexicographic"], default="scalar",
                         help="Scalar uses weighted fitness; lexicographic maximizes ASV first then minimizes MR.")
-    parser.add_argument("--mr-objective", choices=["minimize", "maximize"], default="minimize",
-                        help="How MR is optimized after ASV: minimize for behavioral deviation, maximize for semantic preservation.")
+    parser.add_argument(
+        "--mr-objective",
+        choices=[*MR_OBJECTIVE_MODES, *LEGACY_MR_OBJECTIVE_ALIASES],
+        default=BEHAVIORAL_DEVIATION,
+        help=(
+            "MR interpretation: behavioral_deviation rewards 1-MR; "
+            "semantic_recovery rewards MR. Legacy minimize/maximize aliases are deprecated."
+        ),
+    )
 
     # --- Data ---
     parser.add_argument("--csv", default="prompts/initial_population.csv")
@@ -174,9 +317,25 @@ def parse_args():
                         help="Run without an LLM server or heavy ML dependencies")
 
     # --- K-times stochastic evaluation (Gap 3 fix) ---
-    parser.add_argument("--k-evals", type=int, default=1,
+    parser.add_argument("--k-evals", type=int, default=None,
                         help="Number of stochastic attacked responses sampled per prompt per generation. "
-                             "Higher values reduce noise in ASV/MR estimates (proposal recommends ≥3).")
+                             "Defaults to 3 for real runs and 1 for dry-runs.")
+    parser.add_argument("--direct-temperature", type=float, default=0.0,
+                        help="Temperature for the prompt-specific direct baseline.")
+    parser.add_argument("--filtered-temperature", type=float, default=0.7,
+                        help="Temperature for filtered response sampling.")
+    parser.add_argument("--max-sample-retries", type=int, default=2,
+                        help="Retries after a failed or empty model sample.")
+    parser.add_argument("--max-prompt-chars", type=int, default=2000,
+                        help="Hard validity limit for prompt length.")
+    parser.add_argument("--max-repetition", type=float, default=0.55,
+                        help="Hard validity threshold for repetition penalty.")
+    parser.add_argument("--near-duplicate-threshold", type=float, default=0.05,
+                        help="Maximum token-distance treated as a near duplicate.")
+    parser.add_argument("--disable-structural-mutation", action="store_true",
+                        help="Disable structural prompt mutation (token mutation remains enabled).")
+    parser.add_argument("--disable-token-mutation", action="store_true",
+                        help="Disable token-level mutation (structural mutation remains enabled).")
 
     # --- Filter coevolution (Gap 2 fix — previously hidden in ESConfig) ---
     parser.add_argument("--filter-update-every", type=int, default=0,
@@ -199,19 +358,25 @@ def parse_args():
                         help="Path for the per-generation metrics CSV.")
     parser.add_argument("--run-dir", default=None,
                         help="Directory for structured run artifacts: config.json, "
-                             "generation_summary.csv, filter_events.jsonl, filter_versions.jsonl, outputs.jsonl.")
+                             "generation_summary.csv, lineage.jsonl, manifest.json, "
+                             "summary.json, and evaluation records.")
     parser.add_argument("--quiet", action="store_true")
 
     return parser.parse_args()
 
 
+def _resolve_cli_k_evals(requested: Optional[int], dry_run: bool) -> int:
+    if requested is None:
+        return 1 if dry_run else 3
+    return max(1, int(requested))
+
+
 def main():
     args = parse_args()
-
-    # Propagate k-evals to the environment so run_llm.assign_outputs picks it up
-    os.environ["PROMPTS_VS_FILTERS_K_EVALS"] = str(max(1, int(args.k_evals or 1)))
+    args.mr_objective = normalize_mr_objective(args.mr_objective)
 
     client = build_client(args)
+    args.k_evals = _resolve_cli_k_evals(args.k_evals, args.dry_run)
 
     config = ESConfig(
         lambda_=args.lambda_,
@@ -235,6 +400,17 @@ def main():
         top_k_filter=args.top_k_filter,
         benign_csv_path=args.benign_csv,
         max_filter_chars=args.max_filter_chars,
+        k_evals=args.k_evals,
+        direct_temperature=args.direct_temperature,
+        filtered_temperature=args.filtered_temperature,
+        max_sample_retries=max(0, args.max_sample_retries),
+        max_prompt_chars=max(1, args.max_prompt_chars),
+        max_repetition=max(0.0, min(1.0, args.max_repetition)),
+        near_duplicate_threshold=max(
+            0.0, min(1.0, args.near_duplicate_threshold)
+        ),
+        structural_mutation_enabled=not args.disable_structural_mutation,
+        token_mutation_enabled=not args.disable_token_mutation,
     )
 
     result = evolutionary_strategy_run(
@@ -250,9 +426,13 @@ def main():
     print("\n=== ES RESULT ===")
     print(f"Runtime:              {result.runtime_sec:.2f}s")
     print(f"Best fitness:         {result.best.fitness:.4f}")
+    print(f"MR objective mode:    {config.mr_objective}")
+    print(f"Fitness formula:      {fitness_formula(config.mr_objective)}")
     m = result.best.metrics or {}
-    print(f"Best ASV:             {m.get('asv', 0.0):.4f}")
-    if args.mr_objective == "maximize":
+    print(f"Best attack objective:{m.get('attack_objective', m.get('asv', 0.0)):9.4f}")
+    print(f"Compliance score:     {m.get('attack_compliance_score', 0.0):.4f}")
+    print(f"Unsafe ref similarity:{m.get('unsafe_reference_similarity', 0.0):9.4f}")
+    if args.mr_objective == SEMANTIC_RECOVERY:
         mr_note = "higher = more semantic preservation"
     else:
         mr_note = "lower = more behavioral deviation"
@@ -262,7 +442,9 @@ def main():
     print(f"Final filter length:  {len(result.filter_prompt)} chars")
     print(f"Filter update events: {len(getattr(result, 'filter_events', []))}")
     print(f"Accepted filter vers: {max(0, len(getattr(result, 'filter_versions', [])) - 1)}")
-    print(f"K evals per prompt:   {max(1, int(args.k_evals or 1))}")
+    print(f"K evals per prompt:   {args.k_evals}")
+    print(f"Direct temperature:   {args.direct_temperature:.3f}")
+    print(f"Filtered temperature: {args.filtered_temperature:.3f}")
     if args.history_csv:
         print(f"History CSV:          {args.history_csv}")
     if args.run_dir:

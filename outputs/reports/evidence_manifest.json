@@ -1,0 +1,35 @@
+{
+  "date": "2026-07-27",
+  "branch": "emre",
+  "scope": "T0-T11",
+  "reports": [
+    "outputs/reports/final_implementation_report.md",
+    "outputs/reports/t11_validation.txt",
+    "IMPLEMENTATION_LOG.md",
+    "CHANGELOG.md"
+  ],
+  "documentation": [
+    "docs/architecture.md",
+    "docs/metrics.md",
+    "docs/safety.md",
+    "docs/migration.md"
+  ],
+  "experiment_configs": [
+    "experiments/configs/ablation_matrix.json",
+    "experiments/configs/baseline_handling_fixture.csv"
+  ],
+  "aggregate_evidence": {
+    "smoke_runs": 14,
+    "full_runs": 35,
+    "excluded_runs": 0,
+    "condition_statistics": "outputs/runs/t10_full/analysis/condition_statistics.csv",
+    "analysis_manifest": "outputs/runs/t10_full/analysis/analysis_manifest.json",
+    "convergence_plot_count": 6
+  },
+  "validation": {
+    "tests_passed": 62,
+    "tests_skipped": 1,
+    "fresh_environment_dry_run": "pass"
+  },
+  "interpretation": "Committed experiments are deterministic dry-run validation evidence, not real-model scientific results."
+}

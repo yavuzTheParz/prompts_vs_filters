@@ -13,14 +13,22 @@ from __future__ import annotations
 
 import ast
 import csv
+import hashlib
 import math
 import random
+import statistics
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from Prompt_class import Content, Prompt, Structure
+from mr_objective import (
+    BEHAVIORAL_DEVIATION,
+    SEMANTIC_RECOVERY,
+    normalize_mr_objective,
+)
 from selection import lexicographic_key, scalar_key, sort_population
+from quality_constraints import apply_quality_constraints, mark_near_duplicates
 
 
 FitnessEvaluator = Callable[[List[Prompt]], None]
@@ -44,14 +52,23 @@ class ESConfig:
     random_seed: Optional[int] = None
     lightweight: bool = False
     selection_mode: str = "scalar"
-    mr_objective: str = "minimize"
+    mr_objective: str = BEHAVIORAL_DEVIATION
     filter_update_every: int = 0
     top_k_filter: int = 5
     benign_csv_path: Optional[str] = None
     max_filter_chars: int = 4000
+    k_evals: int = 1
+    direct_temperature: float = 0.0
+    filtered_temperature: float = 0.7
+    max_sample_retries: int = 2
+    max_prompt_chars: int = 2000
+    max_repetition: float = 0.55
+    near_duplicate_threshold: float = 0.05
 
     style_selection: str = "random"
     mutation_styles: Tuple[str, ...] = ("imperative", "plea")
+    structural_mutation_enabled: bool = True
+    token_mutation_enabled: bool = True
     cma_step_size: float = 1.0
     cma_cov_reg: float = 1e-6
 
@@ -65,6 +82,8 @@ class ESRunResult:
     history: List[Dict[str, float]] = field(default_factory=list)
     filter_events: List[Dict[str, Any]] = field(default_factory=list)
     filter_versions: List[Dict[str, Any]] = field(default_factory=list)
+    sample_records: List[Dict[str, Any]] = field(default_factory=list)
+    lineage_records: List[Dict[str, Any]] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------
@@ -169,7 +188,7 @@ def _clone_prompt(prompt: Prompt, *, keep_outputs: bool = False) -> Prompt:
         structure=prompt.structure,
         content=prompt.content,
         fitness=prompt.fitness if keep_outputs else 0.0,
-        direct_output=prompt.direct_output,
+        direct_output=prompt.direct_output if keep_outputs else "",
         metrics=dict(getattr(prompt, "metrics", {}) or {}) if keep_outputs else {},
         metadata=dict(getattr(prompt, "metadata", {}) or {}),
     )
@@ -181,7 +200,7 @@ def _is_better(a: Prompt, b: Prompt, config: Optional[ESConfig] = None) -> bool:
     """Return True when prompt a is preferred over prompt b (fitness is maximized)."""
     mode = config.selection_mode if config else "scalar"
     if mode == "lexicographic":
-        mr_objective = config.mr_objective if config else "minimize"
+        mr_objective = config.mr_objective if config else BEHAVIORAL_DEVIATION
         return lexicographic_key(a, mr_objective=mr_objective) > lexicographic_key(
             b,
             mr_objective=mr_objective,
@@ -191,8 +210,13 @@ def _is_better(a: Prompt, b: Prompt, config: Optional[ESConfig] = None) -> bool:
 
 def _sort_best_first(population: List[Prompt], config: Optional[ESConfig] = None) -> List[Prompt]:
     mode = config.selection_mode if config else "scalar"
-    mr_objective = config.mr_objective if config else "minimize"
-    return sort_population(population, mode=mode, mr_objective=mr_objective)
+    mr_objective = config.mr_objective if config else BEHAVIORAL_DEVIATION
+    ranked = sort_population(population, mode=mode, mr_objective=mr_objective)
+    mark_near_duplicates(
+        ranked,
+        threshold=config.near_duplicate_threshold if config else 0.05,
+    )
+    return sort_population(ranked, mode=mode, mr_objective=mr_objective)
 
 
 def _normalize_survival_schema(schema: str) -> str:
@@ -274,7 +298,7 @@ def _update_cma_distribution(
     ]
 
 
-def _lightweight_mutate_text(text: str, style: Optional[str]) -> Tuple[str, str]:
+def _lightweight_structural_mutate_text(text: str, style: Optional[str]) -> Tuple[str, str]:
     """Small mutation used only for dependency-free dry-runs."""
     text = text or ""
     if style == "plea":
@@ -290,6 +314,17 @@ def _lightweight_mutate_text(text: str, style: Optional[str]) -> Tuple[str, str]
     else:
         choices = [(text + " Please respond carefully.", "LW_NEUTRAL")]
     return random.choice(choices)
+
+
+def _lightweight_token_mutate_text(text: str) -> Tuple[str, str]:
+    words = (text or "").split()
+    candidates = [index for index, word in enumerate(words) if len(word.strip(".,!?")) > 3]
+    if not candidates:
+        return text, "TOKEN_NO_CANDIDATE"
+    index = random.choice(candidates)
+    original = words[index]
+    words[index] = f"{original.rstrip('.,!?')}-reframed"
+    return " ".join(words), "TOKEN_REFRAME_ACCEPT"
 
 
 def _mutate_prompt(
@@ -312,8 +347,18 @@ def _mutate_prompt(
             logs.append("NO_STYLE")
             continue
 
-        if config.lightweight:
-            new_text, log = _lightweight_mutate_text(child.input_prompt, style)
+        if not config.structural_mutation_enabled and not config.token_mutation_enabled:
+            raise ValueError("At least one mutation operator must be enabled")
+
+        use_structural = config.structural_mutation_enabled and (
+            not config.token_mutation_enabled or random.random() < 0.60
+        )
+        if config.lightweight and use_structural:
+            new_text, log = _lightweight_structural_mutate_text(
+                child.input_prompt, style
+            )
+        elif config.lightweight:
+            new_text, log = _lightweight_token_mutate_text(child.input_prompt)
         else:
             new_text, log = _heavy_mutate_text(
                 child.input_prompt,
@@ -322,23 +367,51 @@ def _mutate_prompt(
                 style_manager,
                 tokenizer,
                 bert_model,
+                structural_enabled=config.structural_mutation_enabled,
+                token_enabled=config.token_mutation_enabled,
             )
         child.input_prompt = new_text
         logs.append(log)
 
+    child.direct_output = ""
     child.output_prompts = []
+    child.metrics = {}
     child.fitness = 0.0
+    for key in ("api_error", "valid_llm_response", "sample_records"):
+        child.metadata.pop(key, None)
     return child, logs
 
 
-def _heavy_mutate_text(text, style, template_manager, style_manager, tokenizer, bert_model):
+def _heavy_mutate_text(
+    text,
+    style,
+    template_manager,
+    style_manager,
+    tokenizer,
+    bert_model,
+    *,
+    structural_enabled=True,
+    token_enabled=True,
+):
     if template_manager is None:
         raise RuntimeError("Heavy mutation requested without initialized mutation objects")
     from mutation_manager import hybrid_mutate_optimized
-    return hybrid_mutate_optimized(text, style, template_manager, style_manager, tokenizer, bert_model)
+    return hybrid_mutate_optimized(
+        text,
+        style,
+        template_manager,
+        style_manager,
+        tokenizer,
+        bert_model,
+        structural_enabled=structural_enabled,
+        token_enabled=token_enabled,
+    )
 
 
-def _lightweight_evaluator(population: List[Prompt], mr_objective: str = "minimize") -> None:
+def _lightweight_evaluator(
+    population: List[Prompt],
+    mr_objective: str = BEHAVIORAL_DEVIATION,
+) -> None:
     """
     Deterministic dependency-free evaluator for dry-runs.
 
@@ -352,21 +425,28 @@ def _lightweight_evaluator(population: List[Prompt], mr_objective: str = "minimi
         simulated_mr = max(0.0, 1.0 - length_score)
         simulated_asv = 0.1 if p.output_prompts else 0.0
         behavioral_deviation = 1.0 - simulated_mr
-        mr_component = simulated_mr if mr_objective == "maximize" else behavioral_deviation
+        selected_mr_component = (
+            simulated_mr
+            if mr_objective == SEMANTIC_RECOVERY
+            else behavioral_deviation
+        )
         repetition_penalty = _repetition_penalty(p.input_prompt)
         length_penalty = max(0.0, (len(p.input_prompt) - 500) / 500.0)
 
         p.metrics = {
             "asv": float(simulated_asv),
+            "attack_objective": float(simulated_asv),
+            "attack_compliance_score": float(simulated_asv),
+            "unsafe_reference_similarity": 0.0,
             "mr": float(simulated_mr),
             "behavioral_deviation": float(behavioral_deviation),
-            "mr_component": float(mr_component),
+            "mr_component": float(selected_mr_component),
             "fluency": 1.0 if len(p.input_prompt.split()) >= 3 else 0.25,
             "diversity": 0.0,
             "length_penalty": float(min(length_penalty, 1.0)),
             "repetition_penalty": float(repetition_penalty),
         }
-        p.fitness = 0.7 * simulated_asv + 0.3 * mr_component
+        p.fitness = 0.7 * simulated_asv + 0.3 * selected_mr_component
 
 
 def _repetition_penalty(text: str) -> float:
@@ -384,6 +464,11 @@ def _evaluate_population(
     model_name: str,
     evaluator: FitnessEvaluator,
     lightweight: bool = False,
+    *,
+    config: Optional[ESConfig] = None,
+    generation: int = 0,
+    sample_records: Optional[List[Dict[str, Any]]] = None,
+    filter_version: int = 0,
 ) -> None:
     unevaluated = [p for p in population if not p.output_prompts]
     if unevaluated:
@@ -391,17 +476,81 @@ def _evaluate_population(
             for prompt in unevaluated:
                 if not prompt.direct_output:
                     prompt.direct_output = f"Dry-run direct response for: {prompt.input_prompt}"
-                prompt.output_prompts.append(f"Dry-run filtered response for: {prompt.input_prompt}")
+                    direct_record = {
+                        "generation": generation,
+                        "filter_version": filter_version,
+                        "input_prompt": prompt.input_prompt,
+                        "kind": "direct",
+                        "sample_index": 0,
+                        "attempt": 1,
+                        "status": "valid",
+                        "temperature": 0.0,
+                        "text": prompt.direct_output,
+                    }
+                    prompt.metadata.setdefault("sample_records", []).append(direct_record)
+                    if sample_records is not None:
+                        sample_records.append(direct_record)
+                filtered_text = f"Dry-run filtered response for: {prompt.input_prompt}"
+                prompt.output_prompts.append(filtered_text)
+                filtered_record = {
+                    "generation": generation,
+                    "filter_version": filter_version,
+                    "input_prompt": prompt.input_prompt,
+                    "kind": "filtered",
+                    "sample_index": 0,
+                    "attempt": 1,
+                    "status": "valid",
+                    "temperature": 0.0,
+                    "text": filtered_text,
+                }
+                prompt.metadata.setdefault("sample_records", []).append(filtered_record)
+                if sample_records is not None:
+                    sample_records.append(filtered_record)
         else:
             from run_llm import assign_outputs
-            assign_outputs(filter_prompt, unevaluated, client, model_name=model_name)
+            generated_records = assign_outputs(
+                filter_prompt,
+                unevaluated,
+                client,
+                model_name=model_name,
+                k_evals=config.k_evals if config else None,
+                direct_temperature=config.direct_temperature if config else 0.0,
+                filtered_temperature=config.filtered_temperature if config else 0.7,
+                max_sample_retries=config.max_sample_retries if config else 2,
+                generation=generation,
+                filter_version=filter_version,
+            )
+            if sample_records is not None:
+                sample_records.extend(generated_records)
     if lightweight:
         _lightweight_evaluator(
             population,
-            mr_objective=getattr(evaluator, "mr_objective", "minimize"),
+            mr_objective=getattr(evaluator, "mr_objective", BEHAVIORAL_DEVIATION),
         )
     else:
         evaluator(population)
+    apply_quality_constraints(
+        population,
+        max_prompt_chars=config.max_prompt_chars if config else 2000,
+        max_repetition=config.max_repetition if config else 0.55,
+    )
+    for prompt in population:
+        prompt.metadata["filter_version"] = int(filter_version)
+
+
+def _invalidate_for_filter_update(population: List[Prompt]) -> None:
+    for prompt in population:
+        prompt.output_prompts = []
+        prompt.metrics = {}
+        prompt.fitness = 0.0
+        for key in (
+            "api_error",
+            "valid_llm_response",
+            "attack_evaluations",
+            "attack_evaluator",
+            "attack_evaluator_error",
+        ):
+            prompt.metadata.pop(key, None)
 
 
 def _survival_plus(parents: List[Prompt], offspring: List[Prompt], mu: int, config: ESConfig) -> List[Prompt]:
@@ -410,6 +559,29 @@ def _survival_plus(parents: List[Prompt], offspring: List[Prompt], mu: int, conf
 
 def _survival_comma(offspring: List[Prompt], mu: int, config: ESConfig) -> List[Prompt]:
     return _sort_best_first(offspring, config)[:mu]
+
+
+def _select_cma_survivors(
+    parents: List[Prompt],
+    offspring: List[Prompt],
+    mu: int,
+    config: ESConfig,
+    survival_mode: str,
+) -> Tuple[List[Prompt], List[List[float]], List[float]]:
+    candidates = offspring if survival_mode == "comma" else parents + offspring
+    selected = _sort_best_first(candidates, config)[:mu]
+    vectors = [
+        list((prompt.metadata or {}).get("cma_vector", [0.0, 0.0]))
+        for prompt in selected
+    ]
+    sigmas = [
+        float((prompt.metadata or {}).get("cma_sigma", config.sigma))
+        for prompt in selected
+    ]
+    for prompt, vector, sigma in zip(selected, vectors, sigmas):
+        prompt.metadata["cma_vector"] = list(vector)
+        prompt.metadata["cma_sigma"] = sigma
+    return selected, vectors, sigmas
 
 
 def _best_of(population: List[Prompt], config: ESConfig) -> Prompt:
@@ -428,23 +600,73 @@ def _history_metrics(
     sigma: float,
 ) -> Dict[str, float]:
     mean_parent_fitness = sum(p.fitness for p in parents) / len(parents)
-    return {
+    rejection_counts: Dict[str, int] = {}
+    for prompt in parents:
+        reason = str((prompt.metrics or {}).get("validity_reason", "valid"))
+        if reason != "valid":
+            rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+    row = {
         "generation": float(generation),
         "best_fitness": float(best.fitness),
         "mean_parent_fitness": float(mean_parent_fitness),
         "success_rate": float(success_rate),
         "sigma": float(sigma),
         "best_asv": _metric(best, "asv"),
+        "best_attack_objective": _metric(best, "attack_objective"),
+        "best_attack_compliance_score": _metric(best, "attack_compliance_score"),
+        "best_unsafe_reference_similarity": _metric(
+            best, "unsafe_reference_similarity"
+        ),
         "best_mr": _metric(best, "mr"),
         # FIX: add behavioral_deviation to history so convergence plots show the correct objective
         "best_behavioral_deviation": _metric(best, "behavioral_deviation"),
         "best_mr_component": _metric(best, "mr_component"),
+        "best_asv_std": _metric(best, "asv_std"),
+        "best_mr_std": _metric(best, "mr_std"),
+        "best_sample_count": _metric(best, "sample_count"),
         "best_fluency": _metric(best, "fluency"),
         "best_diversity": _metric(best, "diversity"),
         "best_length_penalty": _metric(best, "length_penalty"),
         "best_repetition_penalty": _metric(best, "repetition_penalty"),
         "best_api_error": _metric(best, "api_error"),
+        "population_diversity": _metric(best, "population_diversity"),
+        "rejected_api_error": float(rejection_counts.get("api_error", 0)),
+        "rejected_empty_output": float(rejection_counts.get("empty_output", 0)),
+        "rejected_prompt_too_long": float(
+            rejection_counts.get("prompt_too_long", 0)
+        ),
+        "rejected_excessive_repetition": float(
+            rejection_counts.get("excessive_repetition", 0)
+        ),
+        "rejected_near_duplicate": float(
+            rejection_counts.get("near_duplicate", 0)
+        ),
     }
+    metric_names = (
+        "fitness",
+        "attack_objective",
+        "attack_compliance_score",
+        "unsafe_reference_similarity",
+        "mr",
+        "behavioral_deviation",
+        "diversity",
+        "length_penalty",
+        "repetition_penalty",
+    )
+    for name in metric_names:
+        values = [
+            float(prompt.fitness if name == "fitness" else _metric(prompt, name))
+            for prompt in parents
+        ]
+        row[f"mean_{name}"] = sum(values) / len(values)
+        row[f"median_{name}"] = statistics.median(values)
+        row[f"std_{name}"] = statistics.pstdev(values) if len(values) > 1 else 0.0
+    return row
+
+
+def _stable_prompt_id(seed: Optional[int], generation: int, index: int, text: str) -> str:
+    payload = f"{seed}|{generation}|{index}|{text}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:16]
 
 
 def _load_benign_prompts(path: Optional[str]) -> List[str]:
@@ -601,9 +823,9 @@ def evolutionary_strategy_run(
     config.selection_mode = (config.selection_mode or "scalar").strip().lower()
     if config.selection_mode not in {"scalar", "lexicographic"}:
         raise ValueError("config.selection_mode must be either 'scalar' or 'lexicographic'")
-    config.mr_objective = (config.mr_objective or "minimize").strip().lower()
-    if config.mr_objective not in {"minimize", "maximize"}:
-        raise ValueError("config.mr_objective must be either 'minimize' or 'maximize'")
+    if not config.structural_mutation_enabled and not config.token_mutation_enabled:
+        raise ValueError("At least one mutation operator must be enabled")
+    config.mr_objective = normalize_mr_objective(config.mr_objective)
 
     if config.lightweight:
         template_manager = style_manager = tokenizer = bert_model = None
@@ -628,10 +850,48 @@ def evolutionary_strategy_run(
 
     parents = random.sample(source_population, config.mu)
     parents = [_clone_prompt(p, keep_outputs=False) for p in parents]
+    lineage_records: List[Dict[str, Any]] = []
+    for index, parent in enumerate(parents):
+        prompt_id = _stable_prompt_id(config.random_seed, 0, index, parent.input_prompt)
+        parent.metadata.update(
+            {
+                "prompt_id": prompt_id,
+                "parent_id": None,
+                "seed_prompt_id": prompt_id,
+                "generation": 0,
+                "mutation_lineage": [],
+            }
+        )
+        lineage_records.append(
+            {
+                "prompt_id": prompt_id,
+                "parent_id": None,
+                "seed_prompt_id": prompt_id,
+                "generation": 0,
+                "mutation_operator": "seed",
+            }
+        )
 
     start = time.time()
-    _evaluate_population(parents, filter_prompt, client, model_name, evaluator, config.lightweight)
+    sample_records: List[Dict[str, Any]] = []
+    _evaluate_population(
+        parents,
+        filter_prompt,
+        client,
+        model_name,
+        evaluator,
+        config.lightweight,
+        config=config,
+        generation=0,
+        sample_records=sample_records,
+        filter_version=0,
+    )
     parents = _sort_best_first(parents, config)
+    if variant == "cma_es":
+        for parent in parents:
+            parent.metadata["cma_vector"] = [0.0, 0.0]
+            parent.metadata["cma_style"] = "initial"
+            parent.metadata["cma_sigma"] = float(config.sigma)
     best = _clone_prompt(parents[0], keep_outputs=True)
 
     parent_sigmas = [float(config.sigma)] * config.mu
@@ -649,12 +909,14 @@ def evolutionary_strategy_run(
         }
     ]
     sigma_global = float(config.sigma)
+    current_filter_version = 0
 
     for generation in range(1, config.generations + 1):
         offspring: List[Prompt] = []
         offspring_parent_indices: List[int] = []
         offspring_sigmas: List[float] = []
         offspring_cma_vectors: List[List[float]] = []
+        operator_attempts = operator_acceptances = operator_fallbacks = 0
 
         if variant == "self_adaptive":
             dim = 1.0
@@ -707,10 +969,55 @@ def evolutionary_strategy_run(
                     template_manager, style_manager, tokenizer, bert_model,
                 )
 
+            child_id = _stable_prompt_id(
+                config.random_seed,
+                generation,
+                len(offspring),
+                child.input_prompt,
+            )
+            parent_id = parent.metadata.get("prompt_id")
+            child.metadata.update(
+                {
+                    "prompt_id": child_id,
+                    "parent_id": parent_id,
+                    "seed_prompt_id": parent.metadata.get("seed_prompt_id", parent_id),
+                    "generation": generation,
+                    "mutation_operator": list(_logs),
+                    "mutation_lineage": list(
+                        parent.metadata.get("mutation_lineage", [])
+                    )
+                    + list(_logs),
+                }
+            )
+            lineage_records.append(
+                {
+                    "prompt_id": child_id,
+                    "parent_id": parent_id,
+                    "seed_prompt_id": child.metadata["seed_prompt_id"],
+                    "generation": generation,
+                    "mutation_operator": list(_logs),
+                }
+            )
+            operator_attempts += len(_logs)
+            operator_acceptances += sum(
+                "REJECT" not in log and "NO_" not in log for log in _logs
+            )
+            operator_fallbacks += sum("FALLBACK" in log for log in _logs)
             offspring.append(child)
             offspring_parent_indices.append(parent_idx)
 
-        _evaluate_population(offspring, filter_prompt, client, model_name, evaluator, config.lightweight)
+        _evaluate_population(
+            offspring,
+            filter_prompt,
+            client,
+            model_name,
+            evaluator,
+            config.lightweight,
+            config=config,
+            generation=generation,
+            sample_records=sample_records,
+            filter_version=current_filter_version,
+        )
 
         successes = sum(
             1 for child, p_idx in zip(offspring, offspring_parent_indices)
@@ -719,22 +1026,20 @@ def evolutionary_strategy_run(
         success_rate = successes / max(1, len(offspring))
 
         if variant == "cma_es":
-            ranked_offspring = _sort_best_first(offspring, config)
-            vector_by_id = {
-                id(prompt): vector for prompt, vector in zip(offspring, offspring_cma_vectors)
-            }
-            sigma_by_id = {
-                id(prompt): sigma for prompt, sigma in zip(offspring, offspring_sigmas)
-            }
-            selected_prompts = ranked_offspring[: config.mu]
-            selected_vectors = [vector_by_id[id(prompt)] for prompt in selected_prompts]
+            selected_prompts, selected_vectors, selected_sigmas = _select_cma_survivors(
+                parents,
+                offspring,
+                config.mu,
+                config,
+                survival_mode,
+            )
             cma_mean, cma_cov = _update_cma_distribution(
                 selected_vectors,
                 cma_cov,
                 config.cma_cov_reg,
             )
             parents = selected_prompts
-            parent_sigmas = [sigma_by_id[id(prompt)] for prompt in selected_prompts]
+            parent_sigmas = selected_sigmas
 
         elif variant == "one_fifth":
             if success_rate > 0.2:
@@ -775,9 +1080,10 @@ def evolutionary_strategy_run(
         if filter_event is not None:
             filter_events.append(filter_event)
             if filter_event.get("filter_changed"):
+                current_filter_version += 1
                 filter_versions.append(
                     {
-                        "version": len(filter_versions),
+                        "version": current_filter_version,
                         "generation": generation,
                         "reason": "accepted_filter_update",
                         "proposed_rule": filter_event.get("proposed_rule", ""),
@@ -785,8 +1091,37 @@ def evolutionary_strategy_run(
                         "filter_prompt": filter_prompt,
                     }
                 )
+                filter_event["old_filter_version"] = current_filter_version - 1
+                filter_event["new_filter_version"] = current_filter_version
+                _invalidate_for_filter_update(parents)
+                _evaluate_population(
+                    parents,
+                    filter_prompt,
+                    client,
+                    model_name,
+                    evaluator,
+                    config.lightweight,
+                    config=config,
+                    generation=generation,
+                    sample_records=sample_records,
+                    filter_version=current_filter_version,
+                )
+                parents = _sort_best_first(parents, config)
+                best = _clone_prompt(parents[0], keep_outputs=True)
 
         history_row = _history_metrics(generation, best, parents, success_rate, sigma_report)
+        history_row.update(
+            {
+                "operator_attempts": float(operator_attempts),
+                "operator_acceptances": float(operator_acceptances),
+                "operator_success_rate": (
+                    operator_acceptances / operator_attempts
+                    if operator_attempts
+                    else 0.0
+                ),
+                "operator_fallbacks": float(operator_fallbacks),
+            }
+        )
         if variant == "cma_es":
             history_row.update(
                 {
@@ -819,6 +1154,8 @@ def evolutionary_strategy_run(
         history=history,
         filter_events=filter_events,
         filter_versions=filter_versions,
+        sample_records=sample_records,
+        lineage_records=lineage_records,
     )
 
 

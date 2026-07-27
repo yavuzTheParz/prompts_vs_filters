@@ -79,7 +79,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mu", type=int, default=2)
     parser.add_argument("--lambda", dest="lambda_", type=int, default=4)
     parser.add_argument("--seed", type=int, default=13)
-    parser.add_argument("--mr-objective", choices=["minimize", "maximize"], default="minimize")
+    parser.add_argument(
+        "--mr-objective",
+        choices=[
+            "behavioral_deviation",
+            "semantic_recovery",
+            "minimize",
+            "maximize",
+        ],
+        default="behavioral_deviation",
+    )
     parser.add_argument("--filter-update-every", type=int, default=1)
     parser.add_argument("--top-k-filter", type=int, default=2)
     parser.add_argument("--real-llm", action="store_true", help="Run the experiment against a configured local LLM.")

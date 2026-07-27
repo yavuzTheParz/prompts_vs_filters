@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="480">
+<rect width="100%" height="100%" fill="white"/>
+<text x="70" y="25" font-family="sans-serif" font-size="18">mean_mr</text>
+<line x1="70" y1="425" x2="875" y2="425" stroke="#333"/>
+<line x1="70" y1="45" x2="70" y2="425" stroke="#333"/>
+<text x="450.0" y="468" text-anchor="middle" font-family="sans-serif" font-size="12">generation</text>
+<text x="18" y="240.0" transform="rotate(-90 18 240.0)" text-anchor="middle" font-family="sans-serif" font-size="12">mean_mr</text>
+<polyline points="70.0,122.5 159.4,102.6 248.9,69.1 338.3,53.4 427.8,52.6 517.2,65.7 606.7,65.7 696.1,47.6 785.6,53.6 875.0,45.0" fill="none" stroke="#2457C5" stroke-width="2"/>
+<text x="795" y="45" font-family="sans-serif" font-size="11" fill="#2457C5">A</text>
+<polyline points="70.0,373.9 159.4,408.2 248.9,424.0 338.3,425.0 427.8,425.0 517.2,425.0 606.7,425.0 696.1,425.0 785.6,425.0 875.0,425.0" fill="none" stroke="#D0473E" stroke-width="2"/>
+<text x="795" y="61" font-family="sans-serif" font-size="11" fill="#D0473E">B</text>
+<polyline points="70.0,208.9 159.4,208.9 248.9,208.7 338.3,211.0 427.8,208.9 517.2,208.7 606.7,208.9 696.1,208.7 785.6,208.9 875.0,211.3" fill="none" stroke="#198754" stroke-width="2"/>
+<text x="795" y="77" font-family="sans-serif" font-size="11" fill="#198754">C</text>
+<polyline points="70.0,141.1 159.4,145.6 248.9,92.7 338.3,95.3 427.8,101.6 517.2,96.1 606.7,93.2 696.1,98.4 785.6,101.8 875.0,92.1" fill="none" stroke="#8B5CF6" stroke-width="2"/>
+<text x="795" y="93" font-family="sans-serif" font-size="11" fill="#8B5CF6">D</text>
+<polyline points="70.0,122.5 159.4,102.6 248.9,69.1 338.3,53.4 427.8,52.6 517.2,65.7 606.7,65.7 696.1,47.6 785.6,53.6 875.0,45.0" fill="none" stroke="#E18A00" stroke-width="2"/>
+<text x="795" y="109" font-family="sans-serif" font-size="11" fill="#E18A00">E</text>
+<polyline points="70.0,373.9 159.4,408.2 248.9,424.0 338.3,425.0 427.8,425.0 517.2,425.0 606.7,425.0 696.1,425.0 785.6,425.0 875.0,425.0" fill="none" stroke="#008C95" stroke-width="2"/>
+<text x="795" y="125" font-family="sans-serif" font-size="11" fill="#008C95">F</text>
+<polyline points="70.0,122.5 159.4,102.6 248.9,69.1 338.3,53.4 427.8,52.6 517.2,65.7 606.7,65.7 696.1,47.6 785.6,53.6 875.0,45.0" fill="none" stroke="#555555" stroke-width="2"/>
+<text x="795" y="141" font-family="sans-serif" font-size="11" fill="#555555">G</text>
+</svg>

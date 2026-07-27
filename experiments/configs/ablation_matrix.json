@@ -1,0 +1,54 @@
+{
+  "matrix_version": "t10-v1",
+  "conditions": [
+    {
+      "id": "A",
+      "filter_mode": "fixed_filter",
+      "mr_objective": "semantic_recovery",
+      "mutation": "structural+token",
+      "selection": "lexicographic"
+    },
+    {
+      "id": "B",
+      "filter_mode": "fixed_filter",
+      "mr_objective": "behavioral_deviation",
+      "mutation": "structural+token",
+      "selection": "lexicographic"
+    },
+    {
+      "id": "C",
+      "filter_mode": "fixed_filter",
+      "mr_objective": "semantic_recovery",
+      "mutation": "token_only",
+      "selection": "lexicographic"
+    },
+    {
+      "id": "D",
+      "filter_mode": "fixed_filter",
+      "mr_objective": "semantic_recovery",
+      "mutation": "structural_only",
+      "selection": "lexicographic"
+    },
+    {
+      "id": "E",
+      "filter_mode": "coevolution",
+      "mr_objective": "semantic_recovery",
+      "mutation": "structural+token",
+      "selection": "lexicographic"
+    },
+    {
+      "id": "F",
+      "filter_mode": "coevolution",
+      "mr_objective": "behavioral_deviation",
+      "mutation": "structural+token",
+      "selection": "lexicographic"
+    },
+    {
+      "id": "G",
+      "filter_mode": "fixed_filter",
+      "mr_objective": "semantic_recovery",
+      "mutation": "structural+token",
+      "selection": "scalar"
+    }
+  ]
+}

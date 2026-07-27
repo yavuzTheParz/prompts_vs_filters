@@ -1,0 +1,2 @@
+comparison,metric,pre_fix_mean,post_fix_mean,mean_difference,cohens_d,source
+post_fix_prompt_specific_minus_pre_fix_compatible,mr,0.785,0.46499999999999997,-0.32000000000000006,-9.050966799187808,sanitized_aggregate_fixture

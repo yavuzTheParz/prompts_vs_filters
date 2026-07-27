@@ -1,0 +1,31 @@
+{
+  "included_runs": 14,
+  "excluded_runs": 0,
+  "conditions": [
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "F",
+    "G"
+  ],
+  "filter_modes_reported_separately": [
+    "coevolution",
+    "fixed_filter"
+  ],
+  "plots": [
+    "convergence_best_fitness.svg",
+    "convergence_best_attack_objective.svg",
+    "convergence_mean_mr.svg",
+    "convergence_population_diversity.svg",
+    "convergence_sigma.svg",
+    "convergence_filter_new_benign_refusal_rate.svg"
+  ],
+  "interpretation_fields": [
+    "best_compliance",
+    "best_similarity",
+    "best_prompt_length",
+    "best_diversity"
+  ]
+}
