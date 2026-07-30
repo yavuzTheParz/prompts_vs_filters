@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "runs": [
+    {
+      "run_id": "coevo_g320_l10_k3_seed13",
+      "path": "outputs/coevo_g320_l10_k3_seed13_run",
+      "status": "invalid",
+      "use": "diagnostic_only",
+      "quarantined_on": "2026-07-30",
+      "reviewed_branch": "emre",
+      "run_commit_sha": "cd407e77a5fdc78a51c0d52ca18aaaceee939537",
+      "reasons": [
+        "internal_marker_leak",
+        "marker_corruption",
+        "quality_gate_failure",
+        "mode_collapse",
+        "duplicate_filter_rule"
+      ],
+      "note": "Preserve original artifacts unchanged. Exclude this run from scientific comparisons, convergence claims, and coevolution effectiveness claims.",
+      "preserve_source_artifacts": true,
+      "artifact_sha256": {
+        "manifest.json": "07fce8ba0ab651d3f5d1d1110bf2ca9b9a67f97c5f87b0ac49384eb116f832de",
+        "summary.json": "d052b13482a3e0830ed3e059da85ba841e773762e48fb1ab860d879e6ed413b1",
+        "generation_summary.csv": "78f44ef3efb616814a67f6e4a18d607cfc3a8bcab03d8c95f1ae1464af720eb8",
+        "lineage.jsonl": "1bc3e87f66afadfdd841fa50361e743e71ea4f965000456819893b16d534eabe"
+      }
+    }
+  ]
+}

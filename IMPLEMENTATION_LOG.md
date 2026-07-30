@@ -497,3 +497,39 @@ Result: the isolated fresh-environment install and dry-run succeeded and
 produced the complete structured artifact set. Thirteen focused
 documentation/provenance/ablation tests passed. The full suite passed 62 tests
 with 1 opt-in local-LLM integration test skipped.
+
+## R0 - Quarantine Invalid Experimental Evidence
+
+- Status: Complete
+- Date: 2026-07-30
+
+### Changes
+
+- Registered `coevo_g320_l10_k3_seed13` as `invalid` and
+  `diagnostic_only` in a machine-readable invalid-run registry.
+- Recorded all five observed invalidation reasons and SHA-256 digests for four
+  primary source artifacts without modifying the original experiment output.
+- Added a reusable run-eligibility helper that partitions valid and
+  quarantined runs and can verify registered artifact hashes read-only.
+- Integrated the registry into the ablation analyzer before any experiment
+  files are read. Quarantined runs now emit an exclusion manifest and exit
+  without producing scientific statistics or plots.
+- Added regression coverage for automatic exclusion, manifest reasons, valid
+  run pass-through, and source-artifact immutability.
+
+### Validation
+
+```bash
+python3 -B -m unittest tests.test_run_quarantine tests.test_ablation \
+  tests.test_documentation -v
+python3 -B analysis/run_registry.py \
+  --run-dir outputs/coevo_g320_l10_k3_seed13_run \
+  --run-dir outputs/runs/t10_full \
+  --output /tmp/r0_run_eligibility.json
+python3 -B -m unittest discover -s tests -v
+```
+
+Result: 13 targeted tests passed. The registry excluded the triggering run
+with all five reasons while leaving `t10_full` eligible. All four registered
+source-artifact SHA-256 digests matched. The full suite passed 66 tests with
+1 opt-in local-LLM integration test skipped.
