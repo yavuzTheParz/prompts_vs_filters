@@ -16,9 +16,10 @@ import csv
 import hashlib
 import math
 import random
+import re
 import statistics
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from Prompt_class import Content, Prompt, Structure
@@ -26,6 +27,13 @@ from mr_objective import (
     BEHAVIORAL_DEVIATION,
     SEMANTIC_RECOVERY,
     normalize_mr_objective,
+)
+from prompt_rendering import (
+    PromptValidationError,
+    parse_internal_prompt,
+    render_prompt,
+    serialize_internal_prompt,
+    validate_internal_prompt,
 )
 from selection import lexicographic_key, scalar_key, sort_population
 from quality_constraints import apply_quality_constraints, mark_near_duplicates
@@ -300,31 +308,97 @@ def _update_cma_distribution(
 
 def _lightweight_structural_mutate_text(text: str, style: Optional[str]) -> Tuple[str, str]:
     """Small mutation used only for dependency-free dry-runs."""
-    text = text or ""
+    before = text or ""
+    try:
+        internal = parse_internal_prompt(before)
+    except PromptValidationError as exc:
+        return before, f"LW_INTERNAL_PROMPT_REJECT({exc})"
+
     if style == "plea":
         choices = [
-            ("Please, " + text, "LW_PREFIX_PLEA"),
-            (text.rstrip(".") + ", please.", "LW_SUFFIX_PLEA"),
+            ("prefix", "Please,", "LW_PREFIX_PLEA"),
+            ("suffix", ", please.", "LW_SUFFIX_PLEA"),
         ]
     elif style == "imperative":
         choices = [
-            ("You must " + text[:1].lower() + text[1:], "LW_PREFIX_IMPERATIVE"),
-            (text.rstrip(".") + ", immediately.", "LW_SUFFIX_IMPERATIVE"),
+            ("prefix", "You must", "LW_PREFIX_IMPERATIVE"),
+            ("suffix", ", immediately.", "LW_SUFFIX_IMPERATIVE"),
         ]
     else:
-        choices = [(text + " Please respond carefully.", "LW_NEUTRAL")]
-    return random.choice(choices)
+        candidate = replace(
+            internal,
+            body=internal.body + " Please respond carefully.",
+        )
+        log = "LW_NEUTRAL"
+        try:
+            candidate = validate_internal_prompt(candidate)
+            render_prompt(candidate)
+            return serialize_internal_prompt(candidate), log
+        except PromptValidationError as exc:
+            return before, f"{log}_INVARIANT_REJECT({exc})"
+
+    field_name, value, log = random.choice(choices)
+    candidate = replace(
+        internal,
+        style=style,
+        **{field_name: value},
+    )
+    try:
+        candidate = validate_internal_prompt(candidate)
+        render_prompt(candidate)
+        return serialize_internal_prompt(candidate), log
+    except PromptValidationError as exc:
+        return before, f"{log}_INVARIANT_REJECT({exc})"
 
 
 def _lightweight_token_mutate_text(text: str) -> Tuple[str, str]:
-    words = (text or "").split()
-    candidates = [index for index, word in enumerate(words) if len(word.strip(".,!?")) > 3]
+    before = text or ""
+    try:
+        internal = parse_internal_prompt(before)
+    except PromptValidationError as exc:
+        return before, f"TOKEN_INTERNAL_PROMPT_REJECT({exc})"
+
+    excluded = {
+        "please",
+        "that",
+        "this",
+        "with",
+        "from",
+        "into",
+        "your",
+        "must",
+    }
+    candidates = [
+        match
+        for match in re.finditer(r"[A-Za-z][A-Za-z'-]*", internal.body)
+        if len(match.group(0)) > 3
+        and match.group(0).lower() not in excluded
+    ]
     if not candidates:
-        return text, "TOKEN_NO_CANDIDATE"
-    index = random.choice(candidates)
-    original = words[index]
-    words[index] = f"{original.rstrip('.,!?')}-reframed"
-    return " ".join(words), "TOKEN_REFRAME_ACCEPT"
+        return before, "TOKEN_NO_CANDIDATE"
+
+    target = random.choice(candidates)
+    original = target.group(0)
+    replacement = f"{original}-reframed"
+    mutated_body = (
+        internal.body[: target.start()]
+        + replacement
+        + internal.body[target.end() :]
+    )
+    try:
+        candidate = validate_internal_prompt(
+            replace(internal, body=mutated_body)
+        )
+        render_prompt(candidate)
+        return (
+            serialize_internal_prompt(candidate),
+            f"TOKEN_BODY_REFRAME_ACCEPT({original}->{replacement})",
+        )
+    except PromptValidationError as exc:
+        return (
+            before,
+            f"TOKEN_INVARIANT_REJECT({original}->{replacement}:{exc})",
+        )
 
 
 def _mutate_prompt(
@@ -370,14 +444,27 @@ def _mutate_prompt(
                 structural_enabled=config.structural_mutation_enabled,
                 token_enabled=config.token_mutation_enabled,
             )
-        child.input_prompt = new_text
+        try:
+            validated = validate_internal_prompt(
+                parse_internal_prompt(new_text)
+            )
+            render_prompt(validated)
+            child.input_prompt = serialize_internal_prompt(validated)
+            child.prompt_representation = validated
+        except PromptValidationError as exc:
+            log = f"{log}_INVARIANT_REJECT({exc})"
         logs.append(log)
 
     child.direct_output = ""
     child.output_prompts = []
     child.metrics = {}
     child.fitness = 0.0
-    for key in ("api_error", "valid_llm_response", "sample_records"):
+    for key in (
+        "api_error",
+        "valid_llm_response",
+        "sample_records",
+        "prompt_render",
+    ):
         child.metadata.pop(key, None)
     return child, logs
 

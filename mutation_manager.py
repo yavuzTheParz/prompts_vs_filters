@@ -3,7 +3,16 @@ from __future__ import annotations
 
 import random
 import re
+from dataclasses import dataclass, replace
 from typing import List, Optional, Tuple
+
+from prompt_rendering import (
+    PromptValidationError,
+    parse_internal_prompt,
+    render_prompt,
+    serialize_internal_prompt,
+    validate_internal_prompt,
+)
 
 try:
     import numpy as np
@@ -43,9 +52,6 @@ except Exception:
 
 
 class TemplateManager:
-    PREFIX_RE = re.compile(r"^\[\[STYLE_PREFIX:[^\]]+\]\].*?\[\[/STYLE_PREFIX\]\]\s*", re.DOTALL)
-    SUFFIX_RE = re.compile(r"\s*\[\[STYLE_SUFFIX:[^\]]+\]\].*?\[\[/STYLE_SUFFIX\]\]$", re.DOTALL)
-
     def __init__(
         self,
         max_chars: int = 2000,
@@ -80,7 +86,7 @@ class TemplateManager:
         ]
 
     def _base_text(self, text: str) -> str:
-        return self.SUFFIX_RE.sub("", self.PREFIX_RE.sub("", text or "")).strip()
+        return parse_internal_prompt(text or "").body
 
     def _limit(self, text: str) -> int:
         base_length = max(1, len(self._base_text(text)))
@@ -92,7 +98,7 @@ class TemplateManager:
             self.max_tokens,
             max(base_tokens, int(base_tokens * self.max_token_growth_ratio)),
         )
-        return len(candidate.split()) <= token_limit
+        return len(self._base_text(candidate).split()) <= token_limit
 
     def _has_repeated_ngram(self, text: str, size: int = 3) -> bool:
         words = re.findall(r"[a-z0-9]+", self._base_text(text).lower())
@@ -114,26 +120,54 @@ class TemplateManager:
         return after if accepted else before
 
     def apply_structural_mutation(self, text: str, style: str) -> str:
+        before = text or ""
+        try:
+            internal = parse_internal_prompt(before)
+        except PromptValidationError as exc:
+            return self._record(
+                "structural_integrity",
+                before,
+                before,
+                False,
+                f"invalid_internal_prompt:{exc}",
+            )
+
         if style == "plea":
             prefixes, suffixes = self.plea_prefixes, self.plea_suffixes
-        else:
+        elif style == "imperative":
             prefixes, suffixes = self.imperative_prefixes, self.imperative_suffixes
+        else:
+            return self._record(
+                "structural_integrity",
+                before,
+                before,
+                False,
+                f"unknown_style:{style}",
+            )
 
-        text = text or ""
-        before = text
         if random.random() < 0.5:
             prefix = random.choice(prefixes)
-            had_prefix = bool(self.PREFIX_RE.match(text))
-            body = self.PREFIX_RE.sub("", text).strip()
-            candidate = f"[[STYLE_PREFIX:{style}]]{prefix}[[/STYLE_PREFIX]] {body}".strip()
+            had_prefix = bool(internal.prefix)
+            candidate_internal = replace(internal, prefix=prefix, style=style)
             operation = "replace_prefix" if had_prefix else "add_prefix"
         else:
             suffix = random.choice(suffixes)
-            had_suffix = bool(self.SUFFIX_RE.search(text))
-            body = self.SUFFIX_RE.sub("", text).strip()
-            candidate = f"{body} [[STYLE_SUFFIX:{style}]]{suffix}[[/STYLE_SUFFIX]]".strip()
+            had_suffix = bool(internal.suffix)
+            candidate_internal = replace(internal, suffix=suffix, style=style)
             operation = "replace_suffix" if had_suffix else "add_suffix"
 
+        try:
+            candidate = serialize_internal_prompt(
+                validate_internal_prompt(candidate_internal)
+            )
+        except PromptValidationError as exc:
+            return self._record(
+                operation,
+                before,
+                before,
+                False,
+                f"structural_invariant:{exc}",
+            )
         if candidate == before:
             return self._record(operation, before, candidate, False, "exact_duplicate")
         if len(candidate) > self._limit(before):
@@ -146,13 +180,27 @@ class TemplateManager:
 
     def compress_mutation(self, text: str) -> str:
         before = text or ""
-        body = self._base_text(before)
-        words = body.split()
+        try:
+            internal = parse_internal_prompt(before)
+        except PromptValidationError as exc:
+            return self._record(
+                "compression",
+                before,
+                before,
+                False,
+                f"invalid_internal_prompt:{exc}",
+            )
+
+        words = internal.body.split()
         compressed = []
         for word in words:
             if not compressed or compressed[-1].lower() != word.lower():
                 compressed.append(word)
-        candidate = " ".join(compressed)
+        candidate = serialize_internal_prompt(
+            validate_internal_prompt(
+                replace(internal, body=" ".join(compressed))
+            )
+        )
         return self._record(
             "compression",
             before,
@@ -197,21 +245,45 @@ class StyleManager:
         return self.style_vectors.get(style_name, np.zeros(dim))
 
 
-def _fallback_candidate_words(prompt_text: str) -> List[Tuple[str, int]]:
-    """Return simple alphabetic tokens and their word indices when spaCy is unavailable."""
-    words = prompt_text.split()
+@dataclass(frozen=True)
+class TokenCandidate:
+    text: str
+    start: int
+    end: int
+    pos: str
+
+
+def _fallback_candidate_words(body: str) -> List[TokenCandidate]:
+    """Return alphabetic body-local spans when spaCy is unavailable."""
     candidates = []
-    for idx, word in enumerate(words):
-        cleaned = re.sub(r"^[^A-Za-z]+|[^A-Za-z]+$", "", word)
-        if len(cleaned) > 3 and cleaned.lower() not in {"please", "that", "this", "with", "from", "into", "your", "must"}:
-            candidates.append((cleaned, idx))
+    excluded = {
+        "please",
+        "that",
+        "this",
+        "with",
+        "from",
+        "into",
+        "your",
+        "must",
+    }
+    for match in re.finditer(r"[A-Za-z][A-Za-z'-]*", body or ""):
+        word = match.group(0)
+        if len(word) > 3 and word.lower() not in excluded:
+            candidates.append(
+                TokenCandidate(
+                    text=word,
+                    start=match.start(),
+                    end=match.end(),
+                    pos="FALLBACK",
+                )
+            )
     return candidates
 
 
-def _choose_target_token(prompt_text: str) -> Tuple[Optional[str], Optional[int], str]:
-    """Choose a verb/adjective target if spaCy exists; otherwise use a simple fallback."""
+def _choose_target_token(body: str) -> Optional[TokenCandidate]:
+    """Choose a verb/adjective body span, falling back to alphabetic spans."""
     if nlp is not None:
-        doc = nlp(prompt_text)
+        doc = nlp(body)
         verbs = [t for t in doc if t.pos_ == "VERB" and not t.is_stop]
         adjs = [t for t in doc if t.pos_ == "ADJ" and not t.is_stop]
 
@@ -225,17 +297,17 @@ def _choose_target_token(prompt_text: str) -> Tuple[Optional[str], Optional[int]
             token = None
 
         if token is not None:
-            words = prompt_text.split()
-            try:
-                return token.text, words.index(token.text), token.pos_
-            except ValueError:
-                return token.text, None, token.pos_
+            return TokenCandidate(
+                text=token.text,
+                start=token.idx,
+                end=token.idx + len(token.text),
+                pos=token.pos_,
+            )
 
-    fallback = _fallback_candidate_words(prompt_text)
+    fallback = _fallback_candidate_words(body)
     if not fallback:
-        return None, None, "NONE"
-    word, idx = random.choice(fallback)
-    return word, idx, "FALLBACK"
+        return None
+    return random.choice(fallback)
 
 
 def hybrid_mutate_optimized(
@@ -261,6 +333,11 @@ def hybrid_mutate_optimized(
     if not structural_enabled and not token_enabled:
         raise ValueError("At least one mutation operator must be enabled")
 
+    try:
+        internal = parse_internal_prompt(prompt_text)
+    except PromptValidationError as exc:
+        return prompt_text, f"INTERNAL_PROMPT_REJECT({exc})"
+
     if structural_enabled and (not token_enabled or random.random() < 0.60):
         mutated = template_mgr.apply_structural_mutation(prompt_text, style)
         operation = template_mgr.last_mutation_log.get("operation", "structural").upper()
@@ -273,21 +350,18 @@ def hybrid_mutate_optimized(
         mutated = template_mgr.apply_structural_mutation(prompt_text, style)
         return mutated, "STRUCTURAL_DEPENDENCY_FALLBACK"
 
-    original_word, word_idx, pos_tag = _choose_target_token(prompt_text)
-    if not original_word or word_idx is None:
+    target = _choose_target_token(internal.body)
+    if target is None:
         if not structural_enabled:
             return prompt_text, "TOKEN_NO_CANDIDATE"
         return template_mgr.apply_structural_mutation(prompt_text, style), "STRUCTURAL_FALLBACK"
 
-    words = prompt_text.split()
-    if word_idx < 0 or word_idx >= len(words):
-        if not structural_enabled:
-            return prompt_text, "TOKEN_INDEX_REJECT"
-        return template_mgr.apply_structural_mutation(prompt_text, style), "STRUCTURAL_INDEX_FALLBACK"
-
-    words[word_idx] = tokenizer.mask_token
-    masked_text = " ".join(words)
-    inputs = tokenizer(masked_text, return_tensors="pt")
+    masked_body = (
+        internal.body[: target.start]
+        + tokenizer.mask_token
+        + internal.body[target.end :]
+    )
+    inputs = tokenizer(masked_body, return_tensors="pt")
 
     mask_positions = torch.where(inputs["input_ids"] == tokenizer.mask_token_id)[1]
     if len(mask_positions) == 0:
@@ -300,7 +374,11 @@ def hybrid_mutate_optimized(
 
     top_k = torch.topk(logits[0, mask_positions[0], :], 50).indices.tolist()
     candidates = tokenizer.convert_ids_to_tokens(top_k)
-    candidates = [c for c in candidates if c.isalpha() and c.lower() != original_word.lower()]
+    candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.isalpha() and candidate.lower() != target.text.lower()
+    ]
 
     if not candidates:
         if not structural_enabled:
@@ -308,10 +386,10 @@ def hybrid_mutate_optimized(
         return template_mgr.apply_structural_mutation(prompt_text, style), "STRUCTURAL_NO_CANDIDATE"
 
     style_vec = style_mgr.get_vector(style)
-    orig_emb = style_mgr.encoder.encode([original_word])[0]
+    orig_emb = style_mgr.encoder.encode([target.text])[0]
     cand_embs = style_mgr.encoder.encode(candidates)
 
-    best_word = original_word
+    best_word = target.text
     best_score = -float("inf")
     found = False
 
@@ -327,11 +405,28 @@ def hybrid_mutate_optimized(
             found = True
 
     if not found:
-        return prompt_text, f"NO_BETTER_CANDIDATE({original_word})"
+        return prompt_text, f"NO_BETTER_CANDIDATE({target.text})"
 
-    words = prompt_text.split()
-    words[word_idx] = best_word
-    return " ".join(words), f"STYLE_INJECT[{pos_tag}]({original_word}->{best_word})"
+    mutated_body = (
+        internal.body[: target.start]
+        + best_word
+        + internal.body[target.end :]
+    )
+    try:
+        candidate_internal = validate_internal_prompt(
+            replace(internal, body=mutated_body)
+        )
+        candidate = serialize_internal_prompt(candidate_internal)
+        render_prompt(candidate_internal)
+    except PromptValidationError as exc:
+        return (
+            prompt_text,
+            f"TOKEN_INVARIANT_REJECT({target.text}->{best_word}:{exc})",
+        )
+    return (
+        candidate,
+        f"STYLE_INJECT_BODY[{target.pos}]({target.text}->{best_word})",
+    )
 
 
 if __name__ == "__main__":

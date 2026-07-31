@@ -174,6 +174,8 @@ Acceptance:
 
 Priority: P0
 
+Status: Complete (2026-07-31)
+
 Objective: Ensure token mutation can alter only the semantic body.
 
 Implementation:

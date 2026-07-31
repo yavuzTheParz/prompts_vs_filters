@@ -572,3 +572,44 @@ Result: 32 targeted tests passed. The full suite passed 72 tests with 1
 opt-in local-LLM integration test skipped. The fixed-seed dry-run completed
 and its sample/final-population artifacts contain both internal and rendered
 prompt hashes.
+
+## R2 - Make Token Mutation Marker-Safe
+
+- Status: Complete
+- Date: 2026-07-31
+
+### Changes
+
+- Changed heavy token targeting from whole-prompt word indices to
+  character-accurate spans selected only from the canonical semantic body.
+- Changed lightweight token mutation to use the same body-local span model;
+  prefix, suffix, style tags, delimiters, and template text are no longer
+  candidate tokens.
+- Reconstructed token mutations by replacing only the selected body span and
+  serializing the validated `InternalPrompt`.
+- Converted structural mutation and compression to structured-field updates,
+  preserving balanced prefix/suffix metadata instead of manipulating marker
+  strings with regular expressions.
+- Added post-operation validation for every mutation path. Corrupted candidates
+  retain the parent text and emit explicit `INVARIANT_REJECT` lineage logs.
+- Cleared stale render-audit metadata whenever a child is mutated.
+
+### Validation
+
+```bash
+python3 -B -m unittest tests.test_marker_safe_mutation \
+  tests.test_mutation_manager tests.test_evolutionary_strategy \
+  tests.test_core_behaviour -v
+python3 -B -m unittest discover -s tests -v
+python3 -B run_es.py --dry-run --variant cma_es --mu 2 --lambda 4 \
+  --generations 5 --seed 109 --history-csv /tmp/r2_history.csv \
+  --run-dir /tmp/r2_run --quiet
+```
+
+Result: 23 targeted tests passed. The generation-46 marker-fragment regression
+cannot expose prefix text to either the heavy or lightweight token selector.
+Across 360 random token-only, structural-only, and hybrid mutations, structural
+invariants held and the marker-targeting count was zero. The full suite passed
+76 tests with 1 opt-in local-LLM integration test skipped. The fixed-seed
+dry-run completed with zero markers in generated response text and zero
+unbalanced or duplicate internal markers.

@@ -68,7 +68,7 @@ class MutationManagerTests(unittest.TestCase):
         self.assertFalse(manager.last_mutation_log["accepted"])
         self.assertEqual(manager.last_mutation_log["reason"], "growth_limit")
 
-    def test_compression_removes_duplicate_words_and_templates(self):
+    def test_compression_removes_duplicate_words_and_preserves_templates(self):
         manager = TemplateManager()
         duplicated = (
             "[[STYLE_PREFIX:plea]]Please,[[/STYLE_PREFIX]] "
@@ -77,7 +77,11 @@ class MutationManagerTests(unittest.TestCase):
 
         compressed = manager.compress_mutation(duplicated)
 
-        self.assertEqual(compressed, "explain safe procedures.")
+        self.assertEqual(
+            compressed,
+            "[[STYLE_PREFIX:plea]]Please,[[/STYLE_PREFIX]] "
+            "explain safe procedures.",
+        )
         self.assertEqual(manager.last_mutation_log["operation"], "compression")
         self.assertTrue(manager.last_mutation_log["accepted"])
 
