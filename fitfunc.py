@@ -9,6 +9,8 @@ from typing import Dict, List, Sequence
 from Prompt_class import Content, Prompt
 from evaluators import DefensiveComplianceEvaluator
 from mr_objective import BEHAVIORAL_DEVIATION, mr_component
+from prompt_rendering import render_prompt
+from quality_constraints import fluency_score, repetition_penalty
 
 try:
     from bert_score import score as bertscore_score
@@ -76,30 +78,10 @@ def _length_penalty(text: str, soft_limit: int = 500) -> float:
     return min((len(text) - soft_limit) / soft_limit, 1.0)
 
 
-def _repetition_penalty(text: str) -> float:
-    words = [w.strip(".,!?;:()[]{}\"'").lower() for w in (text or "").split()]
-    words = [w for w in words if w]
-    if not words:
-        return 0.0
-    unique_ratio = len(set(words)) / len(words)
-    return max(0.0, 1.0 - unique_ratio)
-
-
-def _fallback_fluency(text: str) -> float:
-    text = (text or "").strip()
-    if not text:
-        return 0.0
-    word_count = len(text.split())
-    if word_count < 3:
-        return 0.25
-    if text.count("[MASK]") or "  " in text:
-        return 0.5
-    return 1.0
-
-
 def _base_metrics(prompt: Prompt, asv: float = 0.0, mr: float = 0.0) -> Dict[str, float]:
     # FIX: behavioral_deviation = 1 - MR (lower MR = more deviation from direct output = better attack)
     behavioral_deviation = 1.0 - float(mr)
+    rendered = render_prompt(prompt.internal_prompt)
     return {
         "asv": float(asv),
         "attack_objective": float(asv),
@@ -108,10 +90,10 @@ def _base_metrics(prompt: Prompt, asv: float = 0.0, mr: float = 0.0) -> Dict[str
         "mr": float(mr),
         "behavioral_deviation": float(behavioral_deviation),
         "mr_component": float(behavioral_deviation),
-        "fluency": _fallback_fluency(prompt.input_prompt),
+        "fluency": fluency_score(rendered),
         "diversity": 0.0,
-        "length_penalty": _length_penalty(prompt.input_prompt),
-        "repetition_penalty": _repetition_penalty(prompt.input_prompt),
+        "length_penalty": _length_penalty(rendered),
+        "repetition_penalty": repetition_penalty(rendered),
         "api_error": 1.0 if (getattr(prompt, "metadata", {}) or {}).get("api_error") else 0.0,
     }
 

@@ -91,6 +91,11 @@ def write_history_csv(path: str, history):
         "rejected_prompt_too_long",
         "rejected_excessive_repetition",
         "rejected_near_duplicate",
+        "rejected_invalid_internal_structure",
+        "rejected_marker_leak",
+        "rejected_repeated_phrase",
+        "rejected_seed_growth_exceeded",
+        "rejected_low_fluency",
         "filter_attempted",
         "filter_changed",
         "filter_length",
@@ -370,6 +375,30 @@ def parse_args():
         action="store_true",
         help="Reset ES/CMA search state when the stagnation threshold is reached.",
     )
+    parser.add_argument(
+        "--phrase-ngram-size",
+        type=int,
+        default=2,
+        help="Normalized n-gram size used by phrase repetition checks.",
+    )
+    parser.add_argument(
+        "--max-repeated-phrase-occurrences",
+        type=int,
+        default=2,
+        help="Maximum allowed occurrences of one normalized phrase.",
+    )
+    parser.add_argument(
+        "--max-imperative-fragments",
+        type=int,
+        default=3,
+        help="Maximum allowed imperative-template fragment matches.",
+    )
+    parser.add_argument(
+        "--min-fluency",
+        type=float,
+        default=0.55,
+        help="Minimum auditable heuristic fluency score for a valid prompt.",
+    )
 
     # --- Filter coevolution (Gap 2 fix — previously hidden in ESConfig) ---
     parser.add_argument("--filter-update-every", type=int, default=0,
@@ -454,6 +483,12 @@ def main():
         ),
         stagnation_generations=max(0, args.stagnation_generations),
         restart_on_stagnation=bool(args.restart_on_stagnation),
+        phrase_ngram_size=max(1, args.phrase_ngram_size),
+        max_repeated_phrase_occurrences=max(
+            1, args.max_repeated_phrase_occurrences
+        ),
+        max_imperative_fragments=max(0, args.max_imperative_fragments),
+        min_fluency=max(0.0, min(1.0, args.min_fluency)),
     )
 
     result = evolutionary_strategy_run(

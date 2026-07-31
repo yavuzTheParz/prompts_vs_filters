@@ -241,6 +241,8 @@ Acceptance:
 
 Priority: P0
 
+Status: Complete (2026-07-31)
+
 Objective: Reject malformed or linguistically collapsed candidates before
 selection.
 

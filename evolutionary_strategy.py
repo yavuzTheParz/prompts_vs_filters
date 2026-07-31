@@ -36,7 +36,12 @@ from prompt_rendering import (
     validate_internal_prompt,
 )
 from selection import lexicographic_key, scalar_key, sort_population
-from quality_constraints import apply_quality_constraints, mark_near_duplicates
+from quality_constraints import (
+    apply_quality_constraints,
+    fluency_score,
+    mark_near_duplicates,
+    repetition_penalty,
+)
 
 
 FitnessEvaluator = Callable[[List[Prompt]], None]
@@ -84,6 +89,10 @@ class ESConfig:
     max_seed_token_growth_ratio: float = 2.0
     stagnation_generations: int = 0
     restart_on_stagnation: bool = False
+    phrase_ngram_size: int = 2
+    max_repeated_phrase_occurrences: int = 2
+    max_imperative_fragments: int = 3
+    min_fluency: float = 0.55
 
 
 @dataclass
@@ -628,7 +637,8 @@ def _lightweight_evaluator(
     and the real fitfunc.py formula: fitness = alpha * ASV + beta * (1 - MR).
     """
     for p in population:
-        length_score = min(len(p.input_prompt) / 300.0, 1.0)
+        rendered = render_prompt(p.internal_prompt)
+        length_score = min(len(rendered) / 300.0, 1.0)
         # In dry-run, treat length_score as a proxy for MR (similarity to baseline)
         # A longer / more mutated prompt deviates more → lower simulated MR
         simulated_mr = max(0.0, 1.0 - length_score)
@@ -639,8 +649,8 @@ def _lightweight_evaluator(
             if mr_objective == SEMANTIC_RECOVERY
             else behavioral_deviation
         )
-        repetition_penalty = _repetition_penalty(p.input_prompt)
-        length_penalty = max(0.0, (len(p.input_prompt) - 500) / 500.0)
+        repetition = repetition_penalty(rendered)
+        length_penalty = max(0.0, (len(rendered) - 500) / 500.0)
 
         p.metrics = {
             "asv": float(simulated_asv),
@@ -650,20 +660,12 @@ def _lightweight_evaluator(
             "mr": float(simulated_mr),
             "behavioral_deviation": float(behavioral_deviation),
             "mr_component": float(selected_mr_component),
-            "fluency": 1.0 if len(p.input_prompt.split()) >= 3 else 0.25,
+            "fluency": fluency_score(rendered),
             "diversity": 0.0,
             "length_penalty": float(min(length_penalty, 1.0)),
-            "repetition_penalty": float(repetition_penalty),
+            "repetition_penalty": float(repetition),
         }
         p.fitness = 0.7 * simulated_asv + 0.3 * selected_mr_component
-
-
-def _repetition_penalty(text: str) -> float:
-    words = [w.strip(".,!?;:()[]{}\"'").lower() for w in (text or "").split()]
-    words = [w for w in words if w]
-    if not words:
-        return 0.0
-    return max(0.0, 1.0 - (len(set(words)) / len(words)))
 
 
 def _evaluate_population(
@@ -752,6 +754,20 @@ def _evaluate_population(
         population,
         max_prompt_chars=config.max_prompt_chars if config else 2000,
         max_repetition=config.max_repetition if config else 0.55,
+        phrase_ngram_size=config.phrase_ngram_size if config else 2,
+        max_repeated_phrase_occurrences=(
+            config.max_repeated_phrase_occurrences if config else 2
+        ),
+        max_imperative_fragments=(
+            config.max_imperative_fragments if config else 3
+        ),
+        min_fluency=config.min_fluency if config else 0.55,
+        max_seed_body_growth_ratio=(
+            config.max_seed_body_growth_ratio if config else 2.0
+        ),
+        max_seed_token_growth_ratio=(
+            config.max_seed_token_growth_ratio if config else 2.0
+        ),
     )
     for prompt in population:
         prompt.metadata["filter_version"] = int(filter_version)
@@ -859,6 +875,21 @@ def _history_metrics(
         ),
         "rejected_near_duplicate": float(
             rejection_counts.get("near_duplicate", 0)
+        ),
+        "rejected_invalid_internal_structure": float(
+            rejection_counts.get("invalid_internal_structure", 0)
+        ),
+        "rejected_marker_leak": float(
+            rejection_counts.get("marker_leak", 0)
+        ),
+        "rejected_repeated_phrase": float(
+            rejection_counts.get("repeated_phrase", 0)
+        ),
+        "rejected_seed_growth_exceeded": float(
+            rejection_counts.get("seed_growth_exceeded", 0)
+        ),
+        "rejected_low_fluency": float(
+            rejection_counts.get("low_fluency", 0)
         ),
     }
     metric_names = (
@@ -1055,6 +1086,16 @@ def evolutionary_strategy_run(
     )
     config.stagnation_generations = max(
         0, int(config.stagnation_generations)
+    )
+    config.phrase_ngram_size = max(1, int(config.phrase_ngram_size))
+    config.max_repeated_phrase_occurrences = max(
+        1, int(config.max_repeated_phrase_occurrences)
+    )
+    config.max_imperative_fragments = max(
+        0, int(config.max_imperative_fragments)
+    )
+    config.min_fluency = max(
+        0.0, min(1.0, float(config.min_fluency))
     )
     config.mr_objective = normalize_mr_objective(config.mr_objective)
 

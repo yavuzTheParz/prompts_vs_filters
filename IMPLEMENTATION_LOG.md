@@ -658,3 +658,45 @@ within seed-relative character/token limits. Controlled no-ops produced zero
 operator acceptances and zero evolutionary successes. Fixed-seed stagnation
 restarts repeated at the same generations. The full suite passed 81 tests with
 1 opt-in local-LLM integration test skipped.
+
+## R4 - Add Structural Integrity and Phrase-Level Quality Gates
+
+- Status: Complete
+- Date: 2026-07-31
+
+### Changes
+
+- Moved prompt length, repetition, fluency, diversity, and near-duplicate
+  checks to marker-free rendered text.
+- Added normalized stemming and configurable phrase n-gram counting so
+  inflection variants contribute to the same repetition signal.
+- Added an independent imperative-template fragment counter for accumulated
+  command phrases that global unique-word ratios can miss.
+- Replaced the always-`1.0` fallback fluency behavior with an auditable
+  heuristic combining lexical diversity, repeated phrases, imperative
+  fragments, mask leakage, and spacing corruption.
+- Added hard validity reasons for `invalid_internal_structure`, `marker_leak`,
+  `repeated_phrase`, `seed_growth_exceeded`, and `low_fluency`; every hard
+  failure sets fitness to zero.
+- Added configurable CLI thresholds for phrase size/count, imperative fragment
+  count, and minimum fluency, persisted by the run configuration artifact.
+- Added per-generation rejection counters for every new hard-failure reason.
+
+### Validation
+
+```bash
+python3 -B -m unittest tests.test_quality_constraints tests.test_fitfunc \
+  tests.test_core_behaviour tests.test_mutation_bounds tests.test_run_es -v
+python3 -B -m unittest discover -s tests -v
+python3 -B run_es.py --dry-run --variant cma_es --mu 2 --lambda 4 \
+  --generations 5 --seed 109 --phrase-ngram-size 2 \
+  --max-repeated-phrase-occurrences 2 --max-imperative-fragments 3 \
+  --min-fluency 0.55 --history-csv /tmp/r4_history.csv \
+  --run-dir /tmp/r4_run --quiet
+```
+
+Result: 28 targeted quality/evaluation tests passed. A sanitized analogue of
+the triggering word-salad prompt was rejected as `repeated_phrase`, received
+zero fitness, and could not receive `fluency=1.0`. Inflected phrase variants
+were grouped, while a normal long grammatical sentence remained valid. The
+full suite passed 86 tests with 1 opt-in local-LLM integration test skipped.

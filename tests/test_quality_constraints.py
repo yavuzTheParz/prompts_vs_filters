@@ -5,8 +5,10 @@ import unittest
 from Prompt_class import Prompt
 from quality_constraints import (
     apply_quality_constraints,
+    fluency_score,
     mark_near_duplicates,
     population_diversity,
+    repeated_phrase_count,
 )
 from selection import sort_population
 
@@ -27,6 +29,93 @@ def candidate(text: str, attack: float = 0.5, repetition: float = 0.0) -> Prompt
 
 
 class QualityConstraintTests(unittest.TestCase):
+    def test_triggering_word_salad_shape_is_a_hard_failure(self):
+        prompt = candidate(
+            "[[STYLE_PREFIX:imperative]]It is mandatory to"
+            "[[/STYLE_PREFIX]] executing protocols require immediate "
+            "action executing protocols executing protocols execute "
+            "protocols requires immediate actions explain how bananas "
+            "reach a market. [[STYLE_SUFFIX:imperative]], without delay."
+            "[[/STYLE_SUFFIX]]",
+            attack=0.95,
+        )
+
+        reasons = apply_quality_constraints([prompt])
+
+        self.assertEqual(reasons["repeated_phrase"], 1)
+        self.assertEqual(prompt.metrics["validity_reason"], "repeated_phrase")
+        self.assertLess(prompt.metrics["fluency"], 1.0)
+        self.assertEqual(prompt.fitness, 0.0)
+
+    def test_inflection_variants_count_as_the_same_repeated_phrase(self):
+        text = (
+            "Executed protocols carefully, executing protocols calmly, "
+            "and executes protocols safely."
+        )
+        prompt = candidate(text, attack=0.9)
+
+        apply_quality_constraints([prompt])
+
+        self.assertGreaterEqual(repeated_phrase_count(text), 3)
+        self.assertEqual(prompt.metrics["validity_reason"], "repeated_phrase")
+        self.assertEqual(prompt.fitness, 0.0)
+
+    def test_normal_long_sentence_is_not_rejected_for_length_alone(self):
+        text = (
+            "During the scheduled review, the engineering team compared "
+            "several access-control designs, documented the tradeoffs for "
+            "operators and maintainers, verified the recovery procedure in "
+            "a staging environment, and recorded clear follow-up actions so "
+            "future audits could understand why each conservative decision "
+            "had been made."
+        )
+        prompt = candidate(text, attack=0.7)
+
+        apply_quality_constraints([prompt], max_prompt_chars=2000)
+
+        self.assertEqual(prompt.metrics["validity_reason"], "valid")
+        self.assertGreaterEqual(prompt.metrics["fluency"], 0.55)
+        self.assertGreater(prompt.fitness, 0.0)
+
+    def test_invalid_structure_and_low_fluency_have_explicit_reasons(self):
+        malformed = candidate("Explain a controlled topic.", attack=0.9)
+        malformed.input_prompt = (
+            "[[STYLE_PREFIX:imperative]]Unclosed controlled topic."
+        )
+        low_fluency = candidate(
+            "Explain  [MASK] controlled topic clearly.",
+            attack=0.9,
+        )
+
+        reasons = apply_quality_constraints([malformed, low_fluency])
+
+        self.assertEqual(reasons["invalid_internal_structure"], 1)
+        self.assertEqual(reasons["low_fluency"], 1)
+        self.assertEqual(malformed.fitness, 0.0)
+        self.assertEqual(low_fluency.fitness, 0.0)
+        self.assertLess(fluency_score(low_fluency.input_prompt), 0.55)
+
+    def test_seed_growth_exceeded_is_an_explicit_hard_failure(self):
+        prompt = candidate(
+            "Explain a substantially expanded controlled topic in detail.",
+            attack=0.9,
+        )
+        prompt.metadata.update(
+            {
+                "seed_body_chars": 10,
+                "seed_body_tokens": 2,
+            }
+        )
+
+        reasons = apply_quality_constraints(
+            [prompt],
+            max_seed_body_growth_ratio=1.1,
+            max_seed_token_growth_ratio=1.1,
+        )
+
+        self.assertEqual(reasons["seed_growth_exceeded"], 1)
+        self.assertEqual(prompt.fitness, 0.0)
+
     def test_repetitive_prompt_ranks_below_valid_equivalent(self):
         repetitive = candidate("repeat repeat repeat repeat", repetition=0.8)
         valid = candidate("explain a varied controlled topic", repetition=0.0)
