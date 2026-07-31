@@ -474,12 +474,18 @@ def _evaluate_population(
     if unevaluated:
         if lightweight:
             for prompt in unevaluated:
+                prompt_audit = prompt.render_input()
+                prompt.metadata["prompt_render"] = prompt_audit.audit_dict()
                 if not prompt.direct_output:
-                    prompt.direct_output = f"Dry-run direct response for: {prompt.input_prompt}"
+                    prompt.direct_output = (
+                        f"Dry-run direct response for: {prompt_audit.text}"
+                    )
                     direct_record = {
                         "generation": generation,
                         "filter_version": filter_version,
                         "input_prompt": prompt.input_prompt,
+                        "internal_prompt_sha256": prompt_audit.internal_sha256,
+                        "rendered_prompt_sha256": prompt_audit.rendered_sha256,
                         "kind": "direct",
                         "sample_index": 0,
                         "attempt": 1,
@@ -490,12 +496,16 @@ def _evaluate_population(
                     prompt.metadata.setdefault("sample_records", []).append(direct_record)
                     if sample_records is not None:
                         sample_records.append(direct_record)
-                filtered_text = f"Dry-run filtered response for: {prompt.input_prompt}"
+                filtered_text = (
+                    f"Dry-run filtered response for: {prompt_audit.text}"
+                )
                 prompt.output_prompts.append(filtered_text)
                 filtered_record = {
                     "generation": generation,
                     "filter_version": filter_version,
                     "input_prompt": prompt.input_prompt,
+                    "internal_prompt_sha256": prompt_audit.internal_sha256,
+                    "rendered_prompt_sha256": prompt_audit.rendered_sha256,
                     "kind": "filtered",
                     "sample_index": 0,
                     "attempt": 1,

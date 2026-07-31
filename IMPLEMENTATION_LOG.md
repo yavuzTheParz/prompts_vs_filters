@@ -533,3 +533,42 @@ Result: 13 targeted tests passed. The registry excluded the triggering run
 with all five reasons while leaving `t10_full` eligible. All four registered
 source-artifact SHA-256 digests matched. The full suite passed 66 tests with
 1 opt-in local-LLM integration test skipped.
+
+## R1 - Define an Internal Prompt Representation and Rendering Contract
+
+- Status: Complete
+- Date: 2026-07-31
+
+### Changes
+
+- Added a canonical `InternalPrompt` representation with explicit `prefix`,
+  `body`, `suffix`, and `style` fields, plus marker-based parsing for backward
+  compatibility.
+- Added fail-closed validation for unbalanced, nested, duplicated, malformed,
+  unknown-style, and mixed-style marker input.
+- Added one idempotent renderer that removes internal style markers and
+  produces plain user text.
+- Routed direct generation, filtered generation, filter-rule proposal, and
+  filter robustness evaluation through the same renderer.
+- Added canonical internal and rendered SHA-256 values to sample provenance,
+  prompt metadata, dry-run artifacts, and final-population output.
+- Added regression coverage proving that direct and filtered requests use
+  byte-identical rendered user text and that no internal marker reaches a
+  model client.
+
+### Validation
+
+```bash
+python3 -B -m unittest tests.test_prompt_rendering tests.test_run_llm \
+  tests.test_filter_reevaluation tests.test_core_behaviour \
+  tests.test_provenance tests.test_evolutionary_strategy -v
+python3 -B -m unittest discover -s tests -v
+python3 -B run_es.py --dry-run --variant cma_es --mu 2 --lambda 4 \
+  --generations 2 --seed 109 --history-csv /tmp/r1_history.csv \
+  --run-dir /tmp/r1_run --quiet
+```
+
+Result: 32 targeted tests passed. The full suite passed 72 tests with 1
+opt-in local-LLM integration test skipped. The fixed-seed dry-run completed
+and its sample/final-population artifacts contain both internal and rendered
+prompt hashes.

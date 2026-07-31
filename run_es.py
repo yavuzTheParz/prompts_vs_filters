@@ -195,6 +195,11 @@ def _final_population_output_rows(result):
                             "mutation_lineage", []
                         )
                     ),
+                    "prompt_render": dict(
+                        (getattr(prompt, "metadata", {}) or {}).get(
+                            "prompt_render", {}
+                        )
+                    ),
                     "prompt_length": len(getattr(prompt, "input_prompt", "")),
                     "metrics": metrics,
                     "attack_evaluator": dict(

@@ -139,6 +139,8 @@ Acceptance:
 
 Priority: P0
 
+Status: Complete (2026-07-31)
+
 Objective: Separate mutation metadata from text sent to the model.
 
 Implementation:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from typing import Dict, List, Optional
 
+from prompt_rendering import render_prompt
+
 
 def _clean_assistant_text(text: str) -> str:
     text = (text or "").strip()
@@ -28,9 +30,10 @@ def _generate(client, prompt: str, model_name: str, temperature: float = 0.7) ->
     if client is None:
         return "Test Mode: No API Client provided."
 
+    request_prompt = render_prompt(prompt)
     if hasattr(client, "generate"):
         resp = client.generate(
-            prompt=prompt,
+            prompt=request_prompt,
             max_new_tokens=256,
             temperature=temperature,
             top_p=0.9,
@@ -41,7 +44,7 @@ def _generate(client, prompt: str, model_name: str, temperature: float = 0.7) ->
     # OpenAI/Groq-style fallback
     response = client.chat.completions.create(
         model=model_name,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "user", "content": request_prompt}],
         temperature=temperature,
     )
     return response.choices[0].message.content.strip()
@@ -95,14 +98,21 @@ def assign_outputs(
     k = _resolve_k_evals(k_evals)
     new_records: List[Dict[str, object]] = []
 
-    def generate_sample(prompt_obj, prompt, kind, sample_index, temperature):
+    def generate_sample(
+        prompt_obj,
+        request_prompt,
+        prompt_audit,
+        kind,
+        sample_index,
+        temperature,
+    ):
         attempts = max(1, int(max_sample_retries) + 1)
         last_error = ""
         for attempt in range(1, attempts + 1):
             try:
                 text = _generate(
                     client,
-                    prompt,
+                    request_prompt,
                     model_name=model_name,
                     temperature=temperature,
                 )
@@ -112,6 +122,8 @@ def assign_outputs(
                     "generation": int(generation),
                     "filter_version": int(filter_version),
                     "input_prompt": prompt_obj.input_prompt,
+                    "internal_prompt_sha256": prompt_audit.internal_sha256,
+                    "rendered_prompt_sha256": prompt_audit.rendered_sha256,
                     "kind": kind,
                     "sample_index": int(sample_index),
                     "attempt": attempt,
@@ -128,6 +140,8 @@ def assign_outputs(
                     "generation": int(generation),
                     "filter_version": int(filter_version),
                     "input_prompt": prompt_obj.input_prompt,
+                    "internal_prompt_sha256": prompt_audit.internal_sha256,
+                    "rendered_prompt_sha256": prompt_audit.rendered_sha256,
                     "kind": kind,
                     "sample_index": int(sample_index),
                     "attempt": attempt,
@@ -143,12 +157,16 @@ def assign_outputs(
 
     for prompt_obj in prompts:
         try:
+            prompt_audit = prompt_obj.render_input()
+            prompt_obj.metadata["prompt_render"] = prompt_audit.audit_dict()
+
             # Direct output: one sample without the filter, used as the MR reference baseline
             if generate_direct and not getattr(prompt_obj, "direct_output", ""):
-                direct_prompt = f"User:\n{prompt_obj.input_prompt}\n\nAssistant:"
+                direct_prompt = f"User:\n{prompt_audit.text}\n\nAssistant:"
                 prompt_obj.direct_output = generate_sample(
                     prompt_obj,
                     direct_prompt,
+                    prompt_audit,
                     "direct",
                     0,
                     direct_temperature,
@@ -157,7 +175,7 @@ def assign_outputs(
             # Attacked output: K samples through the defensive filter
             combined_prompt = (
                 f"System:\n{filter_prompt}\n\n"
-                f"User:\n{prompt_obj.input_prompt}\n\n"
+                f"User:\n{prompt_audit.text}\n\n"
                 f"Assistant:"
             )
 
@@ -169,6 +187,7 @@ def assign_outputs(
                 assistant_message = generate_sample(
                     prompt_obj,
                     combined_prompt,
+                    prompt_audit,
                     "filtered",
                     sample_index,
                     filtered_temperature,
