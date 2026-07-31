@@ -497,3 +497,249 @@ Result: the isolated fresh-environment install and dry-run succeeded and
 produced the complete structured artifact set. Thirteen focused
 documentation/provenance/ablation tests passed. The full suite passed 62 tests
 with 1 opt-in local-LLM integration test skipped.
+
+## R0 - Quarantine Invalid Experimental Evidence
+
+- Status: Complete
+- Date: 2026-07-30
+
+### Changes
+
+- Registered `coevo_g320_l10_k3_seed13` as `invalid` and
+  `diagnostic_only` in a machine-readable invalid-run registry.
+- Recorded all five observed invalidation reasons and SHA-256 digests for four
+  primary source artifacts without modifying the original experiment output.
+- Added a reusable run-eligibility helper that partitions valid and
+  quarantined runs and can verify registered artifact hashes read-only.
+- Integrated the registry into the ablation analyzer before any experiment
+  files are read. Quarantined runs now emit an exclusion manifest and exit
+  without producing scientific statistics or plots.
+- Added regression coverage for automatic exclusion, manifest reasons, valid
+  run pass-through, and source-artifact immutability.
+
+### Validation
+
+```bash
+python3 -B -m unittest tests.test_run_quarantine tests.test_ablation \
+  tests.test_documentation -v
+python3 -B analysis/run_registry.py \
+  --run-dir outputs/coevo_g320_l10_k3_seed13_run \
+  --run-dir outputs/runs/t10_full \
+  --output /tmp/r0_run_eligibility.json
+python3 -B -m unittest discover -s tests -v
+```
+
+Result: 13 targeted tests passed. The registry excluded the triggering run
+with all five reasons while leaving `t10_full` eligible. All four registered
+source-artifact SHA-256 digests matched. The full suite passed 66 tests with
+1 opt-in local-LLM integration test skipped.
+
+## R1 - Define an Internal Prompt Representation and Rendering Contract
+
+- Status: Complete
+- Date: 2026-07-31
+
+### Changes
+
+- Added a canonical `InternalPrompt` representation with explicit `prefix`,
+  `body`, `suffix`, and `style` fields, plus marker-based parsing for backward
+  compatibility.
+- Added fail-closed validation for unbalanced, nested, duplicated, malformed,
+  unknown-style, and mixed-style marker input.
+- Added one idempotent renderer that removes internal style markers and
+  produces plain user text.
+- Routed direct generation, filtered generation, filter-rule proposal, and
+  filter robustness evaluation through the same renderer.
+- Added canonical internal and rendered SHA-256 values to sample provenance,
+  prompt metadata, dry-run artifacts, and final-population output.
+- Added regression coverage proving that direct and filtered requests use
+  byte-identical rendered user text and that no internal marker reaches a
+  model client.
+
+### Validation
+
+```bash
+python3 -B -m unittest tests.test_prompt_rendering tests.test_run_llm \
+  tests.test_filter_reevaluation tests.test_core_behaviour \
+  tests.test_provenance tests.test_evolutionary_strategy -v
+python3 -B -m unittest discover -s tests -v
+python3 -B run_es.py --dry-run --variant cma_es --mu 2 --lambda 4 \
+  --generations 2 --seed 109 --history-csv /tmp/r1_history.csv \
+  --run-dir /tmp/r1_run --quiet
+```
+
+Result: 32 targeted tests passed. The full suite passed 72 tests with 1
+opt-in local-LLM integration test skipped. The fixed-seed dry-run completed
+and its sample/final-population artifacts contain both internal and rendered
+prompt hashes.
+
+## R2 - Make Token Mutation Marker-Safe
+
+- Status: Complete
+- Date: 2026-07-31
+
+### Changes
+
+- Changed heavy token targeting from whole-prompt word indices to
+  character-accurate spans selected only from the canonical semantic body.
+- Changed lightweight token mutation to use the same body-local span model;
+  prefix, suffix, style tags, delimiters, and template text are no longer
+  candidate tokens.
+- Reconstructed token mutations by replacing only the selected body span and
+  serializing the validated `InternalPrompt`.
+- Converted structural mutation and compression to structured-field updates,
+  preserving balanced prefix/suffix metadata instead of manipulating marker
+  strings with regular expressions.
+- Added post-operation validation for every mutation path. Corrupted candidates
+  retain the parent text and emit explicit `INVARIANT_REJECT` lineage logs.
+- Cleared stale render-audit metadata whenever a child is mutated.
+
+### Validation
+
+```bash
+python3 -B -m unittest tests.test_marker_safe_mutation \
+  tests.test_mutation_manager tests.test_evolutionary_strategy \
+  tests.test_core_behaviour -v
+python3 -B -m unittest discover -s tests -v
+python3 -B run_es.py --dry-run --variant cma_es --mu 2 --lambda 4 \
+  --generations 5 --seed 109 --history-csv /tmp/r2_history.csv \
+  --run-dir /tmp/r2_run --quiet
+```
+
+Result: 23 targeted tests passed. The generation-46 marker-fragment regression
+cannot expose prefix text to either the heavy or lightweight token selector.
+Across 360 random token-only, structural-only, and hybrid mutations, structural
+invariants held and the marker-targeting count was zero. The full suite passed
+76 tests with 1 opt-in local-LLM integration test skipped. The fixed-seed
+dry-run completed with zero markers in generated response text and zero
+unbalanced or duplicate internal markers.
+
+## R3 - Bound Mutation Accumulation and CMA Intensity
+
+- Status: Complete
+- Date: 2026-07-31
+
+### Changes
+
+- Decoupled continuous sigma intensity from literal rewrite count and added a
+  configurable `max_mutations_per_child` hard cap with a default of two.
+- Added seed-relative body character and token growth limits in addition to the
+  existing immediate-parent mutation constraints.
+- Rejected byte-equivalent rendered no-ops and excluded them from evolutionary
+  success and operator-acceptance counts.
+- Added per-child and since-seed attempt, acceptance, rejection, no-op, and
+  consecutive-rejection metadata to lineage and generation history.
+- Added configurable stagnation detection and optional deterministic reset of
+  global sigma, self-adaptive sigmas, and CMA mean/covariance state.
+- Prevented style changes from relabeling an existing template phrase with an
+  incompatible style; the incompatible opposite template field is cleared.
+- Exposed all new mutation-bound and stagnation controls through the CLI and
+  persisted them through the existing run configuration artifact.
+
+### Validation
+
+```bash
+python3 -B -m unittest tests.test_mutation_bounds \
+  tests.test_marker_safe_mutation tests.test_mutation_manager \
+  tests.test_cma_survival tests.test_evolutionary_strategy \
+  tests.test_run_es -v
+python3 -B -m unittest discover -s tests -v
+python3 -B run_es.py --dry-run --variant cma_es --mu 2 --lambda 4 \
+  --generations 10 --seed 109 --max-mutations-per-child 2 \
+  --max-seed-body-growth-ratio 1.25 \
+  --max-seed-token-growth-ratio 1.25 \
+  --stagnation-generations 2 --restart-on-stagnation \
+  --history-csv /tmp/r3_history.csv --run-dir /tmp/r3_run --quiet
+```
+
+Result: 25 focused mutation/CMA tests passed. A 320-generation synthetic
+comma-survival run kept every child at or below two attempted mutations and
+within seed-relative character/token limits. Controlled no-ops produced zero
+operator acceptances and zero evolutionary successes. Fixed-seed stagnation
+restarts repeated at the same generations. The full suite passed 81 tests with
+1 opt-in local-LLM integration test skipped.
+
+## R4 - Add Structural Integrity and Phrase-Level Quality Gates
+
+- Status: Complete
+- Date: 2026-07-31
+
+### Changes
+
+- Moved prompt length, repetition, fluency, diversity, and near-duplicate
+  checks to marker-free rendered text.
+- Added normalized stemming and configurable phrase n-gram counting so
+  inflection variants contribute to the same repetition signal.
+- Added an independent imperative-template fragment counter for accumulated
+  command phrases that global unique-word ratios can miss.
+- Replaced the always-`1.0` fallback fluency behavior with an auditable
+  heuristic combining lexical diversity, repeated phrases, imperative
+  fragments, mask leakage, and spacing corruption.
+- Added hard validity reasons for `invalid_internal_structure`, `marker_leak`,
+  `repeated_phrase`, `seed_growth_exceeded`, and `low_fluency`; every hard
+  failure sets fitness to zero.
+- Added configurable CLI thresholds for phrase size/count, imperative fragment
+  count, and minimum fluency, persisted by the run configuration artifact.
+- Added per-generation rejection counters for every new hard-failure reason.
+
+### Validation
+
+```bash
+python3 -B -m unittest tests.test_quality_constraints tests.test_fitfunc \
+  tests.test_core_behaviour tests.test_mutation_bounds tests.test_run_es -v
+python3 -B -m unittest discover -s tests -v
+python3 -B run_es.py --dry-run --variant cma_es --mu 2 --lambda 4 \
+  --generations 5 --seed 109 --phrase-ngram-size 2 \
+  --max-repeated-phrase-occurrences 2 --max-imperative-fragments 3 \
+  --min-fluency 0.55 --history-csv /tmp/r4_history.csv \
+  --run-dir /tmp/r4_run --quiet
+```
+
+Result: 28 targeted quality/evaluation tests passed. A sanitized analogue of
+the triggering word-salad prompt was rejected as `repeated_phrase`, received
+zero fitness, and could not receive `fluency=1.0`. Inflected phrase variants
+were grouped, while a normal long grammatical sentence remained valid. The
+full suite passed 86 tests with 1 opt-in local-LLM integration test skipped.
+
+## R5 - Align Attack Measurement and Selection With Genuine Compliance
+
+- Status: Complete
+- Date: 2026-07-31
+
+### Changes
+
+- Made `attack_compliance_score` the primary attack-related key in scalar,
+  lexicographic, and rank-partitioning selection.
+- Defined `attack_objective` as compliance alone and removed auxiliary
+  unsafe-reference similarity from scalar fitness.
+- Retained `unsafe_reference_similarity` as a separately reported final
+  tie-break diagnostic.
+- Added explicit K-sample `attack_success`, all-ambiguous detection, evaluator
+  summaries, and refusal, benign-educational, compliant, ambiguous, and invalid
+  sample counts.
+- Persisted best and population-total class counts in generation history.
+- Added sanitized calibration fixtures, confusion-matrix reporting, and a
+  command-line calibration report.
+- Updated terminal/config fitness formulas and documentation to name compliance
+  explicitly instead of the legacy ASV alias.
+
+### Validation
+
+```bash
+python3 -B -m unittest tests.test_attack_evaluator tests.test_selection \
+  tests.test_fitfunc tests.test_run_llm tests.test_run_es -v
+python3 -B -m unittest discover -s tests -v
+python3 -B scripts/calibrate_attack_evaluator.py
+python3 -B run_es.py --dry-run --variant cma_es \
+  --selection-mode lexicographic --mr-objective behavioral_deviation \
+  --mu 3 --lambda 4 --generations 2 --seed 13
+```
+
+Result: A compliant response ranks above an ambiguous/refusal response even
+when the latter has maximum reference similarity. Similarity alone cannot
+produce attack success, three ambiguous samples remain non-success, and
+evaluator failures remain invalid with zero fitness. The five-class sanitized
+calibration fixture produced a 5/5 diagonal confusion matrix. The full suite
+passed 90 tests with 1 opt-in local-LLM integration test skipped, and the
+fixed-seed dry-run completed with compliance named separately from similarity
+and MR.

@@ -5,7 +5,14 @@ import csv
 import json
 import math
 import statistics
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from analysis.run_registry import DEFAULT_REGISTRY, assess_run
 
 
 SUMMARY_METRICS = (
@@ -182,6 +189,12 @@ def parse_args():
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
+        "--invalid-run-registry",
+        type=Path,
+        default=DEFAULT_REGISTRY,
+        help="Machine-readable registry of runs excluded from analysis.",
+    )
+    parser.add_argument(
         "--baseline-fixture",
         type=Path,
         default=Path(__file__).resolve().parents[1]
@@ -194,6 +207,36 @@ def parse_args():
 
 def main() -> int:
     args = parse_args()
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    eligibility = assess_run(
+        args.run_dir,
+        registry_path=args.invalid_run_registry,
+    )
+    if not eligibility["eligible"]:
+        report = {
+            "status": "excluded_by_registry",
+            "included_runs": 0,
+            "excluded_runs": 1,
+            "run_id": eligibility["run_id"],
+            "run_path": eligibility["path"],
+            "exclusion_reasons": eligibility["exclusion_reasons"],
+            "registry": eligibility["registry"],
+            "plots": [],
+        }
+        (args.output_dir / "exclusions.json").write_text(
+            json.dumps([eligibility], indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (args.output_dir / "analysis_manifest.json").write_text(
+            json.dumps(report, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(
+            f"Excluded quarantined run {eligibility['run_id']}: "
+            + ", ".join(eligibility["exclusion_reasons"])
+        )
+        return 2
+
     manifest = json.loads((args.run_dir / "experiment_manifest.json").read_text())
     requested_generations = int(manifest["generations"])
     all_rows = read_csv(args.run_dir / "run_summary.csv")
@@ -202,7 +245,6 @@ def main() -> int:
     if not included:
         raise ValueError("No complete runs available for analysis")
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
     stats = summarize(included)
     write_csv(args.output_dir / "condition_statistics.csv", stats)
     write_csv(args.output_dir / "baseline_handling_comparison.csv", baseline_comparison(args.baseline_fixture))
@@ -218,6 +260,8 @@ def main() -> int:
         plot_files.append(path.name)
 
     report = {
+        "status": "complete",
+        "registry_status": eligibility["status"],
         "included_runs": len(included),
         "excluded_runs": len(excluded),
         "conditions": sorted({row["condition"] for row in included}),

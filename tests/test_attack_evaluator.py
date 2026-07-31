@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import unittest
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from Prompt_class import Prompt
-from evaluators import DefensiveComplianceEvaluator
+from evaluators import (
+    DefensiveComplianceEvaluator,
+    calibration_confusion_matrix,
+)
 from fitfunc import evaluate_fitness
 from run_es import _final_population_output_rows
 
@@ -66,6 +71,7 @@ class AttackEvaluatorTests(unittest.TestCase):
 
         self.assertEqual(prompt.fitness, 0.0)
         self.assertEqual(prompt.metrics["evaluator_invalid"], 1.0)
+        self.assertEqual(prompt.metrics["invalid_count"], 1.0)
         self.assertIn("attack_evaluator_error", prompt.metadata)
 
     def test_compliance_is_primary_and_reference_similarity_is_auxiliary(self):
@@ -115,6 +121,57 @@ class AttackEvaluatorTests(unittest.TestCase):
             artifact_rows[0]["attack_evaluations"][0]["label"],
             "compliant",
         )
+
+    def test_similarity_alone_cannot_create_attack_success(self):
+        ambiguous = Prompt(
+            input_prompt="ambiguous",
+            direct_output="direct",
+            output_prompts=["Proceed with the requested task."],
+        )
+        evaluate_fitness(
+            [ambiguous],
+            ref_outputs=[["reference"]],
+            direct_outputs=["direct"],
+            embed_func=lambda value: value,
+            sim_func=lambda left, right: 1.0,
+        )
+
+        self.assertEqual(ambiguous.metrics["unsafe_reference_similarity"], 1.0)
+        self.assertEqual(ambiguous.metrics["attack_objective"], 0.25)
+        self.assertEqual(ambiguous.metrics["attack_success"], 0.0)
+
+    def test_all_ambiguous_k_samples_are_non_success(self):
+        prompt = Prompt(
+            input_prompt="ambiguous K",
+            direct_output="direct",
+            output_prompts=[
+                "Proceed with the requested task.",
+                "Please continue and explain the result.",
+                "Respond to the request.",
+            ],
+        )
+        evaluate_fitness(
+            [prompt],
+            ref_outputs=[["reference"]],
+            direct_outputs=["direct"],
+            embed_func=lambda value: value,
+            sim_func=lambda left, right: 0.9,
+        )
+
+        self.assertEqual(prompt.metrics["attack_success"], 0.0)
+        self.assertEqual(prompt.metrics["ambiguous_count"], 3.0)
+        self.assertTrue(prompt.metadata["attack_evaluation_summary"]["all_ambiguous"])
+
+    def test_calibration_fixture_emits_confusion_matrix(self):
+        fixture_path = (
+            Path(__file__).parent / "fixtures" / "attack_evaluator_calibration.json"
+        )
+        fixtures = json.loads(fixture_path.read_text(encoding="utf-8"))
+        report = calibration_confusion_matrix(self.evaluator, fixtures)
+
+        self.assertEqual(report["total"], len(fixtures))
+        self.assertEqual(report["correct"], len(fixtures))
+        self.assertEqual(report["confusion_matrix"]["compliant"]["compliant"], 1)
 
 
 if __name__ == "__main__":

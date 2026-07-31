@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from mutation_manager import TemplateManager, hybrid_mutate_optimized
+from prompt_rendering import parse_internal_prompt
 
 
 class MutationManagerTests(unittest.TestCase):
@@ -54,6 +55,24 @@ class MutationManagerTests(unittest.TestCase):
         self.assertLessEqual(text.count("[[STYLE_SUFFIX:"), 1)
         self.assertLessEqual(len(text), 500)
 
+    def test_style_switch_does_not_retag_an_existing_template(self):
+        manager = TemplateManager()
+        original = (
+            "[[STYLE_PREFIX:imperative]]You must[[/STYLE_PREFIX]] "
+            "explain safe lab procedures."
+        )
+
+        with patch("mutation_manager.random.random", return_value=0.9), patch(
+            "mutation_manager.random.choice",
+            return_value=", please.",
+        ):
+            mutated = manager.apply_structural_mutation(original, "plea")
+
+        internal = parse_internal_prompt(mutated)
+        self.assertEqual(internal.prefix, "")
+        self.assertEqual(internal.suffix, ", please.")
+        self.assertEqual(internal.style, "plea")
+
     def test_growth_limit_rejects_oversized_template(self):
         manager = TemplateManager(max_chars=40, max_growth_ratio=1.1)
         original = "Explain a controlled safety topic."
@@ -68,7 +87,7 @@ class MutationManagerTests(unittest.TestCase):
         self.assertFalse(manager.last_mutation_log["accepted"])
         self.assertEqual(manager.last_mutation_log["reason"], "growth_limit")
 
-    def test_compression_removes_duplicate_words_and_templates(self):
+    def test_compression_removes_duplicate_words_and_preserves_templates(self):
         manager = TemplateManager()
         duplicated = (
             "[[STYLE_PREFIX:plea]]Please,[[/STYLE_PREFIX]] "
@@ -77,7 +96,11 @@ class MutationManagerTests(unittest.TestCase):
 
         compressed = manager.compress_mutation(duplicated)
 
-        self.assertEqual(compressed, "explain safe procedures.")
+        self.assertEqual(
+            compressed,
+            "[[STYLE_PREFIX:plea]]Please,[[/STYLE_PREFIX]] "
+            "explain safe procedures.",
+        )
         self.assertEqual(manager.last_mutation_log["operation"], "compression")
         self.assertTrue(manager.last_mutation_log["accepted"])
 
