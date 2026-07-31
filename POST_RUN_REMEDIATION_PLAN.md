@@ -210,6 +210,8 @@ Acceptance:
 
 Priority: P0
 
+Status: Complete (2026-07-31)
+
 Objective: Prevent long runs from accumulating hundreds of low-value edits.
 
 Implementation:

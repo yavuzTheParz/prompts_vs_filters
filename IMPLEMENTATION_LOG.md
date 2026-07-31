@@ -613,3 +613,48 @@ invariants held and the marker-targeting count was zero. The full suite passed
 76 tests with 1 opt-in local-LLM integration test skipped. The fixed-seed
 dry-run completed with zero markers in generated response text and zero
 unbalanced or duplicate internal markers.
+
+## R3 - Bound Mutation Accumulation and CMA Intensity
+
+- Status: Complete
+- Date: 2026-07-31
+
+### Changes
+
+- Decoupled continuous sigma intensity from literal rewrite count and added a
+  configurable `max_mutations_per_child` hard cap with a default of two.
+- Added seed-relative body character and token growth limits in addition to the
+  existing immediate-parent mutation constraints.
+- Rejected byte-equivalent rendered no-ops and excluded them from evolutionary
+  success and operator-acceptance counts.
+- Added per-child and since-seed attempt, acceptance, rejection, no-op, and
+  consecutive-rejection metadata to lineage and generation history.
+- Added configurable stagnation detection and optional deterministic reset of
+  global sigma, self-adaptive sigmas, and CMA mean/covariance state.
+- Prevented style changes from relabeling an existing template phrase with an
+  incompatible style; the incompatible opposite template field is cleared.
+- Exposed all new mutation-bound and stagnation controls through the CLI and
+  persisted them through the existing run configuration artifact.
+
+### Validation
+
+```bash
+python3 -B -m unittest tests.test_mutation_bounds \
+  tests.test_marker_safe_mutation tests.test_mutation_manager \
+  tests.test_cma_survival tests.test_evolutionary_strategy \
+  tests.test_run_es -v
+python3 -B -m unittest discover -s tests -v
+python3 -B run_es.py --dry-run --variant cma_es --mu 2 --lambda 4 \
+  --generations 10 --seed 109 --max-mutations-per-child 2 \
+  --max-seed-body-growth-ratio 1.25 \
+  --max-seed-token-growth-ratio 1.25 \
+  --stagnation-generations 2 --restart-on-stagnation \
+  --history-csv /tmp/r3_history.csv --run-dir /tmp/r3_run --quiet
+```
+
+Result: 25 focused mutation/CMA tests passed. A 320-generation synthetic
+comma-survival run kept every child at or below two attempted mutations and
+within seed-relative character/token limits. Controlled no-ops produced zero
+operator acceptances and zero evolutionary successes. Fixed-seed stagnation
+restarts repeated at the same generations. The full suite passed 81 tests with
+1 opt-in local-LLM integration test skipped.

@@ -79,6 +79,11 @@ class ESConfig:
     token_mutation_enabled: bool = True
     cma_step_size: float = 1.0
     cma_cov_reg: float = 1e-6
+    max_mutations_per_child: int = 2
+    max_seed_body_growth_ratio: float = 2.0
+    max_seed_token_growth_ratio: float = 2.0
+    stagnation_generations: int = 0
+    restart_on_stagnation: bool = False
 
 
 @dataclass
@@ -236,14 +241,65 @@ def _normalize_survival_schema(schema: str) -> str:
     raise ValueError(f"Unsupported survival schema: {schema}")
 
 
-def _mutation_repetitions(sigma: float, sigma_min: float, sigma_max: float) -> int:
+def _mutation_repetitions(
+    sigma: float,
+    sigma_min: float,
+    sigma_max: float,
+    max_mutations_per_child: int = 2,
+) -> int:
     sigma = max(sigma_min, min(sigma_max, sigma))
-    base = int(math.floor(sigma))
-    frac = sigma - base
-    reps = max(1, base)
-    if random.random() < frac:
-        reps += 1
-    return max(1, min(int(math.ceil(sigma_max)), reps))
+    cap = max(1, int(max_mutations_per_child))
+    if cap == 1 or sigma_max <= sigma_min:
+        return 1
+    intensity = (sigma - sigma_min) / (sigma_max - sigma_min)
+    extra = sum(
+        1
+        for _ in range(cap - 1)
+        if random.random() < intensity
+    )
+    return 1 + extra
+
+
+def _seed_growth_rejection(
+    parent: Prompt,
+    candidate_body: str,
+    config: ESConfig,
+) -> Optional[str]:
+    seed_body = str(
+        parent.metadata.get("seed_body", parent.internal_prompt.body)
+    )
+    seed_chars = max(1, len(seed_body))
+    seed_tokens = max(1, len(seed_body.split()))
+    char_limit = max(
+        seed_chars,
+        int(math.ceil(seed_chars * config.max_seed_body_growth_ratio)),
+    )
+    token_limit = max(
+        seed_tokens,
+        int(math.ceil(seed_tokens * config.max_seed_token_growth_ratio)),
+    )
+    candidate_chars = len(candidate_body)
+    candidate_tokens = len(candidate_body.split())
+    if candidate_chars > char_limit or candidate_tokens > token_limit:
+        return (
+            "SEED_GROWTH_REJECT"
+            f"(chars={candidate_chars}/{char_limit},"
+            f"tokens={candidate_tokens}/{token_limit})"
+        )
+    return None
+
+
+def _stagnation_step(
+    counter: int,
+    improved: bool,
+    config: ESConfig,
+) -> Tuple[int, bool, bool]:
+    if improved or config.stagnation_generations <= 0:
+        return 0 if improved else counter, False, False
+    counter += 1
+    if counter < config.stagnation_generations:
+        return counter, False, False
+    return 0, True, bool(config.restart_on_stagnation)
 
 
 def _safe_cholesky_2x2(cov: List[List[float]], reg: float) -> Tuple[float, float, float]:
@@ -338,10 +394,18 @@ def _lightweight_structural_mutate_text(text: str, style: Optional[str]) -> Tupl
             return before, f"{log}_INVARIANT_REJECT({exc})"
 
     field_name, value, log = random.choice(choices)
+    other_field = "suffix" if field_name == "prefix" else "prefix"
     candidate = replace(
         internal,
         style=style,
-        **{field_name: value},
+        **{
+            field_name: value,
+            other_field: (
+                getattr(internal, other_field)
+                if internal.style in {None, style}
+                else ""
+            ),
+        },
     )
     try:
         candidate = validate_internal_prompt(candidate)
@@ -413,12 +477,26 @@ def _mutate_prompt(
 ) -> Tuple[Prompt, List[str]]:
     child = _clone_prompt(parent, keep_outputs=False)
     logs: List[str] = []
+    accepted_operations = 0
+    rejected_operations = 0
+    no_op_operations = 0
+    consecutive_rejections = int(
+        parent.metadata.get("consecutive_rejected_mutations", 0) or 0
+    )
 
-    reps = _mutation_repetitions(sigma, config.sigma_min, config.sigma_max)
+    reps = _mutation_repetitions(
+        sigma,
+        config.sigma_min,
+        config.sigma_max,
+        config.max_mutations_per_child,
+    )
     for _ in range(reps):
+        before_rendered = render_prompt(child.internal_prompt)
         style = forced_style if forced_style is not None else choose_mutation_style(child.structure, config)
         if style is None:
             logs.append("NO_STYLE")
+            rejected_operations += 1
+            consecutive_rejections += 1
             continue
 
         if not config.structural_mutation_enabled and not config.token_mutation_enabled:
@@ -448,13 +526,57 @@ def _mutate_prompt(
             validated = validate_internal_prompt(
                 parse_internal_prompt(new_text)
             )
-            render_prompt(validated)
-            child.input_prompt = serialize_internal_prompt(validated)
-            child.prompt_representation = validated
+            rendered_candidate = render_prompt(validated)
+            growth_rejection = _seed_growth_rejection(
+                parent,
+                validated.body,
+                config,
+            )
+            if rendered_candidate == before_rendered:
+                log = f"{log}_NOOP_REJECT"
+                no_op_operations += 1
+                rejected_operations += 1
+                consecutive_rejections += 1
+            elif growth_rejection is not None:
+                log = f"{log}_{growth_rejection}"
+                rejected_operations += 1
+                consecutive_rejections += 1
+            else:
+                child.input_prompt = serialize_internal_prompt(validated)
+                child.prompt_representation = validated
+                accepted_operations += 1
+                consecutive_rejections = 0
         except PromptValidationError as exc:
             log = f"{log}_INVARIANT_REJECT({exc})"
+            rejected_operations += 1
+            consecutive_rejections += 1
         logs.append(log)
 
+    child.metadata.update(
+        {
+            "mutation_attempts_since_seed": int(
+                parent.metadata.get("mutation_attempts_since_seed", 0) or 0
+            )
+            + len(logs),
+            "mutation_count_since_seed": int(
+                parent.metadata.get("mutation_count_since_seed", 0) or 0
+            )
+            + accepted_operations,
+            "rejected_mutations_since_seed": int(
+                parent.metadata.get("rejected_mutations_since_seed", 0) or 0
+            )
+            + rejected_operations,
+            "no_op_mutations_since_seed": int(
+                parent.metadata.get("no_op_mutations_since_seed", 0) or 0
+            )
+            + no_op_operations,
+            "consecutive_rejected_mutations": consecutive_rejections,
+            "last_mutation_attempts": len(logs),
+            "last_mutation_acceptances": accepted_operations,
+            "last_mutation_rejections": rejected_operations,
+            "last_mutation_noops": no_op_operations,
+        }
+    )
     child.direct_output = ""
     child.output_prompts = []
     child.metrics = {}
@@ -922,6 +1044,18 @@ def evolutionary_strategy_run(
         raise ValueError("config.selection_mode must be either 'scalar' or 'lexicographic'")
     if not config.structural_mutation_enabled and not config.token_mutation_enabled:
         raise ValueError("At least one mutation operator must be enabled")
+    config.max_mutations_per_child = max(
+        1, int(config.max_mutations_per_child)
+    )
+    config.max_seed_body_growth_ratio = max(
+        1.0, float(config.max_seed_body_growth_ratio)
+    )
+    config.max_seed_token_growth_ratio = max(
+        1.0, float(config.max_seed_token_growth_ratio)
+    )
+    config.stagnation_generations = max(
+        0, int(config.stagnation_generations)
+    )
     config.mr_objective = normalize_mr_objective(config.mr_objective)
 
     if config.lightweight:
@@ -950,6 +1084,7 @@ def evolutionary_strategy_run(
     lineage_records: List[Dict[str, Any]] = []
     for index, parent in enumerate(parents):
         prompt_id = _stable_prompt_id(config.random_seed, 0, index, parent.input_prompt)
+        seed_body = parent.internal_prompt.body
         parent.metadata.update(
             {
                 "prompt_id": prompt_id,
@@ -957,6 +1092,14 @@ def evolutionary_strategy_run(
                 "seed_prompt_id": prompt_id,
                 "generation": 0,
                 "mutation_lineage": [],
+                "seed_body": seed_body,
+                "seed_body_chars": len(seed_body),
+                "seed_body_tokens": len(seed_body.split()),
+                "mutation_attempts_since_seed": 0,
+                "mutation_count_since_seed": 0,
+                "rejected_mutations_since_seed": 0,
+                "no_op_mutations_since_seed": 0,
+                "consecutive_rejected_mutations": 0,
             }
         )
         lineage_records.append(
@@ -966,6 +1109,8 @@ def evolutionary_strategy_run(
                 "seed_prompt_id": prompt_id,
                 "generation": 0,
                 "mutation_operator": "seed",
+                "mutation_count_since_seed": 0,
+                "consecutive_rejected_mutations": 0,
             }
         )
 
@@ -1007,6 +1152,8 @@ def evolutionary_strategy_run(
     ]
     sigma_global = float(config.sigma)
     current_filter_version = 0
+    stagnation_counter = 0
+    restart_count = 0
 
     for generation in range(1, config.generations + 1):
         offspring: List[Prompt] = []
@@ -1014,6 +1161,7 @@ def evolutionary_strategy_run(
         offspring_sigmas: List[float] = []
         offspring_cma_vectors: List[List[float]] = []
         operator_attempts = operator_acceptances = operator_fallbacks = 0
+        operator_rejections = operator_noops = 0
 
         if variant == "self_adaptive":
             dim = 1.0
@@ -1093,11 +1241,25 @@ def evolutionary_strategy_run(
                     "seed_prompt_id": child.metadata["seed_prompt_id"],
                     "generation": generation,
                     "mutation_operator": list(_logs),
+                    "mutation_count_since_seed": int(
+                        child.metadata.get("mutation_count_since_seed", 0)
+                    ),
+                    "consecutive_rejected_mutations": int(
+                        child.metadata.get(
+                            "consecutive_rejected_mutations", 0
+                        )
+                    ),
                 }
             )
             operator_attempts += len(_logs)
-            operator_acceptances += sum(
-                "REJECT" not in log and "NO_" not in log for log in _logs
+            operator_acceptances += int(
+                child.metadata.get("last_mutation_acceptances", 0)
+            )
+            operator_rejections += int(
+                child.metadata.get("last_mutation_rejections", 0)
+            )
+            operator_noops += int(
+                child.metadata.get("last_mutation_noops", 0)
             )
             operator_fallbacks += sum("FALLBACK" in log for log in _logs)
             offspring.append(child)
@@ -1118,7 +1280,8 @@ def evolutionary_strategy_run(
 
         successes = sum(
             1 for child, p_idx in zip(offspring, offspring_parent_indices)
-            if _is_better(child, parents[p_idx], config)
+            if int(child.metadata.get("last_mutation_acceptances", 0)) > 0
+            and _is_better(child, parents[p_idx], config)
         )
         success_rate = successes / max(1, len(offspring))
 
@@ -1167,8 +1330,23 @@ def evolutionary_strategy_run(
 
         ranked_population = _sort_best_first(parents + offspring, config)
         current_best = ranked_population[0]
-        if _is_better(current_best, best, config):
+        improved = _is_better(current_best, best, config)
+        if improved:
             best = _clone_prompt(current_best, keep_outputs=True)
+        stagnation_counter, stagnation_detected, restart_triggered = (
+            _stagnation_step(stagnation_counter, improved, config)
+        )
+        if restart_triggered:
+            restart_count += 1
+            sigma_global = float(config.sigma)
+            parent_sigmas = [float(config.sigma)] * len(parents)
+            cma_mean = [0.0, 0.0]
+            cma_cov = [[1.0, 0.0], [0.0, 1.0]]
+            if variant == "cma_es":
+                for parent in parents:
+                    parent.metadata["cma_vector"] = [0.0, 0.0]
+                    parent.metadata["cma_style"] = "restart"
+                    parent.metadata["cma_sigma"] = float(config.sigma)
 
         sigma_report = sigma_global if variant == "one_fifth" else sum(parent_sigmas) / len(parent_sigmas)
         filter_prompt, filter_metrics, filter_event = _maybe_evolve_filter(
@@ -1217,6 +1395,16 @@ def evolutionary_strategy_run(
                     else 0.0
                 ),
                 "operator_fallbacks": float(operator_fallbacks),
+                "operator_rejections": float(operator_rejections),
+                "operator_noops": float(operator_noops),
+                "stagnation_counter": float(stagnation_counter),
+                "stagnation_detected": (
+                    1.0 if stagnation_detected else 0.0
+                ),
+                "restart_triggered": (
+                    1.0 if restart_triggered else 0.0
+                ),
+                "restart_count": float(restart_count),
             }
         )
         if variant == "cma_es":

@@ -148,12 +148,30 @@ class TemplateManager:
         if random.random() < 0.5:
             prefix = random.choice(prefixes)
             had_prefix = bool(internal.prefix)
-            candidate_internal = replace(internal, prefix=prefix, style=style)
+            candidate_internal = replace(
+                internal,
+                prefix=prefix,
+                suffix=(
+                    internal.suffix
+                    if internal.style in {None, style}
+                    else ""
+                ),
+                style=style,
+            )
             operation = "replace_prefix" if had_prefix else "add_prefix"
         else:
             suffix = random.choice(suffixes)
             had_suffix = bool(internal.suffix)
-            candidate_internal = replace(internal, suffix=suffix, style=style)
+            candidate_internal = replace(
+                internal,
+                prefix=(
+                    internal.prefix
+                    if internal.style in {None, style}
+                    else ""
+                ),
+                suffix=suffix,
+                style=style,
+            )
             operation = "replace_suffix" if had_suffix else "add_suffix"
 
         try:

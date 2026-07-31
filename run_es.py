@@ -341,6 +341,35 @@ def parse_args():
                         help="Disable structural prompt mutation (token mutation remains enabled).")
     parser.add_argument("--disable-token-mutation", action="store_true",
                         help="Disable token-level mutation (structural mutation remains enabled).")
+    parser.add_argument(
+        "--max-mutations-per-child",
+        type=int,
+        default=2,
+        help="Hard cap on sequential text mutations applied to one child.",
+    )
+    parser.add_argument(
+        "--max-seed-body-growth-ratio",
+        type=float,
+        default=2.0,
+        help="Maximum body character growth relative to the seed prompt.",
+    )
+    parser.add_argument(
+        "--max-seed-token-growth-ratio",
+        type=float,
+        default=2.0,
+        help="Maximum body token growth relative to the seed prompt.",
+    )
+    parser.add_argument(
+        "--stagnation-generations",
+        type=int,
+        default=0,
+        help="Generations without improvement before stagnation is recorded; 0 disables.",
+    )
+    parser.add_argument(
+        "--restart-on-stagnation",
+        action="store_true",
+        help="Reset ES/CMA search state when the stagnation threshold is reached.",
+    )
 
     # --- Filter coevolution (Gap 2 fix — previously hidden in ESConfig) ---
     parser.add_argument("--filter-update-every", type=int, default=0,
@@ -416,6 +445,15 @@ def main():
         ),
         structural_mutation_enabled=not args.disable_structural_mutation,
         token_mutation_enabled=not args.disable_token_mutation,
+        max_mutations_per_child=max(1, args.max_mutations_per_child),
+        max_seed_body_growth_ratio=max(
+            1.0, args.max_seed_body_growth_ratio
+        ),
+        max_seed_token_growth_ratio=max(
+            1.0, args.max_seed_token_growth_ratio
+        ),
+        stagnation_generations=max(0, args.stagnation_generations),
+        restart_on_stagnation=bool(args.restart_on_stagnation),
     )
 
     result = evolutionary_strategy_run(
