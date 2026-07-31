@@ -304,7 +304,7 @@ def parse_args():
     parser.add_argument("--cma-cov-reg", type=float, default=1e-6)
     parser.add_argument("--survival", default="(mu+lambda)", help="(mu+lambda) or (mu,lambda)")
     parser.add_argument("--selection-mode", choices=["scalar", "lexicographic"], default="scalar",
-                        help="Scalar uses weighted fitness; lexicographic maximizes ASV first then minimizes MR.")
+                        help="Selection prioritizes attack compliance, then the configured MR objective.")
     parser.add_argument(
         "--mr-objective",
         choices=[*MR_OBJECTIVE_MODES, *LEGACY_MR_OBJECTIVE_ALIASES],

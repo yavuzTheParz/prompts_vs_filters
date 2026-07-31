@@ -278,6 +278,8 @@ Acceptance:
 
 Priority: P0
 
+Status: Complete (2026-07-31)
+
 Objective: Stop auxiliary embedding similarity from elevating refusal-like or
 ambiguous responses above genuinely compliant responses.
 

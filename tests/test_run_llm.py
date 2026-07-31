@@ -115,16 +115,18 @@ class RunLLMSamplingTests(unittest.TestCase):
             mr_objective="semantic_recovery",
         )
 
-        self.assertAlmostEqual(prompt.metrics["asv"], 0.32)
+        self.assertAlmostEqual(prompt.metrics["asv"], 0.25)
         self.assertAlmostEqual(prompt.metrics["unsafe_reference_similarity"], 0.6)
         self.assertAlmostEqual(prompt.metrics["mr"], 0.5)
-        self.assertAlmostEqual(prompt.metrics["asv_std"], 0.0489897949)
+        self.assertAlmostEqual(prompt.metrics["asv_std"], 0.0)
         self.assertAlmostEqual(
             prompt.metrics["unsafe_reference_similarity_std"],
             0.2449489743,
         )
         self.assertAlmostEqual(prompt.metrics["mr_std"], 0.2449489743)
         self.assertEqual(prompt.metrics["sample_count"], 3.0)
+        self.assertEqual(prompt.metrics["ambiguous_count"], 3.0)
+        self.assertEqual(prompt.metrics["attack_success"], 0.0)
 
 
 if __name__ == "__main__":

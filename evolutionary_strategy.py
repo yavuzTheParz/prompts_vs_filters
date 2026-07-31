@@ -849,6 +849,7 @@ def _history_metrics(
         "best_asv": _metric(best, "asv"),
         "best_attack_objective": _metric(best, "attack_objective"),
         "best_attack_compliance_score": _metric(best, "attack_compliance_score"),
+        "best_attack_success": _metric(best, "attack_success"),
         "best_unsafe_reference_similarity": _metric(
             best, "unsafe_reference_similarity"
         ),
@@ -859,6 +860,13 @@ def _history_metrics(
         "best_asv_std": _metric(best, "asv_std"),
         "best_mr_std": _metric(best, "mr_std"),
         "best_sample_count": _metric(best, "sample_count"),
+        "best_compliant_count": _metric(best, "compliant_count"),
+        "best_ambiguous_count": _metric(best, "ambiguous_count"),
+        "best_refusal_count": _metric(best, "refusal_count"),
+        "best_benign_educational_count": _metric(
+            best, "benign_educational_count"
+        ),
+        "best_invalid_count": _metric(best, "invalid_count"),
         "best_fluency": _metric(best, "fluency"),
         "best_diversity": _metric(best, "diversity"),
         "best_length_penalty": _metric(best, "length_penalty"),
@@ -896,6 +904,7 @@ def _history_metrics(
         "fitness",
         "attack_objective",
         "attack_compliance_score",
+        "attack_success",
         "unsafe_reference_similarity",
         "mr",
         "behavioral_deviation",
@@ -911,6 +920,16 @@ def _history_metrics(
         row[f"mean_{name}"] = sum(values) / len(values)
         row[f"median_{name}"] = statistics.median(values)
         row[f"std_{name}"] = statistics.pstdev(values) if len(values) > 1 else 0.0
+    for label in (
+        "compliant",
+        "ambiguous",
+        "refusal",
+        "benign_educational",
+        "invalid",
+    ):
+        row[f"population_{label}_count"] = sum(
+            _metric(prompt, f"{label}_count") for prompt in parents
+        )
     return row
 
 

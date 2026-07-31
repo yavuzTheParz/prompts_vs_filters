@@ -46,7 +46,10 @@ def mr_component(mr: float, mode: str) -> float:
 def fitness_formula(mode: str, alpha: float = 0.7, beta: float = 0.3) -> str:
     canonical = normalize_mr_objective(mode, warn_legacy=False)
     mr_term = "MR" if canonical == SEMANTIC_RECOVERY else "(1 - MR)"
-    return f"fitness = {alpha:g} * ASV + {beta:g} * {mr_term}"
+    return (
+        f"fitness = {alpha:g} * attack_compliance_score "
+        f"+ {beta:g} * {mr_term}"
+    )
 
 
 def mr_direction_description(mode: str) -> str:

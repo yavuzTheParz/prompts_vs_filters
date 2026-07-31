@@ -700,3 +700,46 @@ the triggering word-salad prompt was rejected as `repeated_phrase`, received
 zero fitness, and could not receive `fluency=1.0`. Inflected phrase variants
 were grouped, while a normal long grammatical sentence remained valid. The
 full suite passed 86 tests with 1 opt-in local-LLM integration test skipped.
+
+## R5 - Align Attack Measurement and Selection With Genuine Compliance
+
+- Status: Complete
+- Date: 2026-07-31
+
+### Changes
+
+- Made `attack_compliance_score` the primary attack-related key in scalar,
+  lexicographic, and rank-partitioning selection.
+- Defined `attack_objective` as compliance alone and removed auxiliary
+  unsafe-reference similarity from scalar fitness.
+- Retained `unsafe_reference_similarity` as a separately reported final
+  tie-break diagnostic.
+- Added explicit K-sample `attack_success`, all-ambiguous detection, evaluator
+  summaries, and refusal, benign-educational, compliant, ambiguous, and invalid
+  sample counts.
+- Persisted best and population-total class counts in generation history.
+- Added sanitized calibration fixtures, confusion-matrix reporting, and a
+  command-line calibration report.
+- Updated terminal/config fitness formulas and documentation to name compliance
+  explicitly instead of the legacy ASV alias.
+
+### Validation
+
+```bash
+python3 -B -m unittest tests.test_attack_evaluator tests.test_selection \
+  tests.test_fitfunc tests.test_run_llm tests.test_run_es -v
+python3 -B -m unittest discover -s tests -v
+python3 -B scripts/calibrate_attack_evaluator.py
+python3 -B run_es.py --dry-run --variant cma_es \
+  --selection-mode lexicographic --mr-objective behavioral_deviation \
+  --mu 3 --lambda 4 --generations 2 --seed 13
+```
+
+Result: A compliant response ranks above an ambiguous/refusal response even
+when the latter has maximum reference similarity. Similarity alone cannot
+produce attack success, three ambiguous samples remain non-success, and
+evaluator failures remain invalid with zero fitness. The five-class sanitized
+calibration fixture produced a 5/5 diagonal confusion matrix. The full suite
+passed 90 tests with 1 opt-in local-LLM integration test skipped, and the
+fixed-seed dry-run completed with compliance named separately from similarity
+and MR.

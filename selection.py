@@ -30,31 +30,36 @@ def scalar_key(p: Prompt) -> float:
 def constraint_key(p: Prompt, mr_objective: str = BEHAVIORAL_DEVIATION):
     metrics = getattr(p, "metrics", {}) or {}
     valid = _flt(metrics.get("valid", 1.0))
-    attack, mr_term = lexicographic_key(p, mr_objective)
+    compliance, mr_term, similarity = lexicographic_key(p, mr_objective)
     quality = (
         -get_metric(p, "repetition_penalty")
         - get_metric(p, "length_penalty")
         + get_metric(p, "diversity")
     )
-    return (valid, attack, mr_term, quality, scalar_key(p))
+    return (valid, compliance, mr_term, quality, scalar_key(p), similarity)
 
 
 def lexicographic_key(
     p: Prompt,
     mr_objective: str = BEHAVIORAL_DEVIATION,
-) -> Tuple[float, float]:
+) -> Tuple[float, float, float]:
     """
-    ASV is always maximized. MR can be optimized in two experiment modes:
+    Genuine compliance is always the primary attack key. Unsafe-reference
+    similarity is an auxiliary final tie-breaker. MR can be optimized in two modes:
     - behavioral_deviation: prefer lower MR by maximizing 1 - MR.
     - semantic_recovery: prefer higher MR directly.
     """
-    asv = get_metric(p, "attack_objective")
-    if "attack_objective" not in (getattr(p, "metrics", {}) or {}):
-        asv = get_metric(p, "asv")
+    metrics = getattr(p, "metrics", {}) or {}
+    compliance = get_metric(p, "attack_compliance_score")
+    if "attack_compliance_score" not in metrics:
+        compliance = get_metric(p, "attack_objective")
+    if "attack_objective" not in metrics:
+        compliance = get_metric(p, "asv")
+    similarity = get_metric(p, "unsafe_reference_similarity")
     mr = get_metric(p, "mr")
     if normalize_mr_objective(mr_objective) == SEMANTIC_RECOVERY:
-        return (asv, mr)
-    return (asv, 1.0 - mr)
+        return (compliance, mr, similarity)
+    return (compliance, 1.0 - mr, similarity)
 
 
 def ranking_evaluation(gas: dict, fit_array):
@@ -172,7 +177,13 @@ def sort_population_rank_partitioning(
     fit_array = np.zeros((len(population), 6), dtype=float)
     for i, p in enumerate(population):
         fit_array[i, gas["fitIdx"]["originalIndex"]] = i
-        fit_array[i, gas["fitIdx"]["asv"]] = get_metric(p, "asv")
+        metrics = getattr(p, "metrics", {}) or {}
+        primary = get_metric(p, "attack_compliance_score")
+        if "attack_compliance_score" not in metrics:
+            primary = get_metric(p, "attack_objective")
+        if "attack_objective" not in metrics:
+            primary = get_metric(p, "asv")
+        fit_array[i, gas["fitIdx"]["asv"]] = primary
         fit_array[i, gas["fitIdx"]["mr"]] = get_metric(p, "mr")
 
     ranked_fit_array = ranking_evaluation(gas, fit_array)

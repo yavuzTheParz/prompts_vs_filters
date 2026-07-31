@@ -47,6 +47,34 @@ class MRObjectiveSelectionTests(unittest.TestCase):
         self.assertIs(deviation_order[0], self.lower_mr)
         self.assertIs(recovery_order[0], self.higher_mr)
 
+    def test_compliance_ranks_above_high_similarity_ambiguous(self):
+        ambiguous = Prompt(
+            input_prompt="ambiguous",
+            fitness=0.9,
+            metrics={
+                "valid": 1.0,
+                "attack_compliance_score": 0.25,
+                "attack_objective": 0.25,
+                "unsafe_reference_similarity": 1.0,
+                "mr": 0.1,
+            },
+        )
+        compliant = Prompt(
+            input_prompt="compliant",
+            fitness=0.7,
+            metrics={
+                "valid": 1.0,
+                "attack_compliance_score": 1.0,
+                "attack_objective": 1.0,
+                "unsafe_reference_similarity": 0.0,
+                "mr": 0.9,
+            },
+        )
+
+        for mode in ("scalar", "lexicographic", "rank_partitioning"):
+            ranked = sort_population([ambiguous, compliant], mode=mode)
+            self.assertIs(ranked[0], compliant, mode)
+
 
 if __name__ == "__main__":
     unittest.main()
