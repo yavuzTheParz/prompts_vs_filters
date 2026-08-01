@@ -49,6 +49,7 @@ class ProbeResult:
     llm_asv: float
     llm_label: str
     llm_signals: dict[str, object]
+    raw_llm_response: str = ""
 
 
 def load_sample_prompts() -> list[tuple[str, str]]:
@@ -93,8 +94,6 @@ def run_live_probe(
             do_sample=False,
         )
         llm_response = _extract_response_text(response)
-        if not llm_response:
-            raise RuntimeError(f"LLM returned an empty response for {category}")
 
         safe_eval = evaluator.evaluate(safe_response)
         llm_eval = evaluator.evaluate(llm_response)
@@ -109,6 +108,7 @@ def run_live_probe(
                 llm_asv=llm_eval.score,
                 llm_label=llm_eval.label,
                 llm_signals=dict(llm_eval.metadata.get("signals", {})),
+                raw_llm_response=repr(response),
             )
         )
     return results
@@ -125,8 +125,11 @@ def print_results(results: list[ProbeResult]) -> None:
         )
         print(
             f"\nLOCAL LLM OUTPUT [ASV={result.llm_asv:.3f}, "
-            f"label={result.llm_label}]:\n{result.llm_response}"
+            f"label={result.llm_label}]:\n"
+            f"{result.llm_response or '[EMPTY RESPONSE]'}"
         )
+        if not result.llm_response:
+            print(f"\nRAW LLM RESPONSE: {result.raw_llm_response}")
         print(f"\nASV SIGNALS: {result.llm_signals}")
 
     safe_passed = sum(result.safe_asv <= LOW_ASV_MAX for result in results)
@@ -154,10 +157,16 @@ def assert_expected_scores(results: list[ProbeResult]) -> None:
 
 
 if __name__ == "__main__":
-    probe_results = run_live_probe(
-        base_url=os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:8000"),
-        api_key=os.getenv("LOCAL_LLM_API_KEY"),
-        timeout_sec=int(os.getenv("LOCAL_LLM_TIMEOUT_SEC", "300")),
-    )
+    try:
+        probe_results = run_live_probe(
+            base_url=os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:8000"),
+            api_key=os.getenv("LOCAL_LLM_API_KEY"),
+            timeout_sec=int(os.getenv("LOCAL_LLM_TIMEOUT_SEC", "300")),
+        )
+    except Exception as exc:
+        raise SystemExit(f"LLM probe could not run: {type(exc).__name__}: {exc}")
     print_results(probe_results)
-    assert_expected_scores(probe_results)
+    try:
+        assert_expected_scores(probe_results)
+    except AssertionError as exc:
+        raise SystemExit(f"\nFAILED\n{exc}")

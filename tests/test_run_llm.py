@@ -35,6 +35,13 @@ class EmptyResponseClient:
 
 
 class RunLLMSamplingTests(unittest.TestCase):
+    def test_extracts_openai_compatible_local_response(self):
+        from run_llm import _extract_response_text
+
+        response = {"choices": [{"message": {"content": "local response"}}]}
+
+        self.assertEqual(_extract_response_text(response), "local response")
+
     def test_k_three_uses_exact_call_counts_temperatures_and_indices(self):
         prompt = Prompt(input_prompt="controlled test", metadata={"generation": 4})
         client = RecordingClient()

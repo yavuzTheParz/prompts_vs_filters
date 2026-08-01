@@ -23,6 +23,16 @@ def _extract_response_text(response) -> str:
         for key in ("text", "generated_text", "content", "response"):
             if key in response and response[key] is not None:
                 return _clean_assistant_text(str(response[key]))
+        # Also accept OpenAI-compatible JSON returned by some local servers.
+        choices = response.get("choices")
+        if isinstance(choices, list) and choices:
+            choice = choices[0]
+            if isinstance(choice, dict):
+                message = choice.get("message")
+                if isinstance(message, dict) and message.get("content") is not None:
+                    return _clean_assistant_text(str(message["content"]))
+                if choice.get("text") is not None:
+                    return _clean_assistant_text(str(choice["text"]))
     return _clean_assistant_text(str(response))
 
 

@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import os
+import sys
 import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from evaluators import DefensiveComplianceEvaluator
 from tests.manual_llm_asv_probe import (
