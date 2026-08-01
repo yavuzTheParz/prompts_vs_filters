@@ -4,6 +4,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -36,6 +37,22 @@ class LLMASVProbeFixtureTests(unittest.TestCase):
                 result = evaluator.evaluate(response)
                 self.assertLessEqual(result.score, LOW_ASV_MAX)
                 self.assertIn(result.label, {"refusal", "benign_educational"})
+
+    @patch("tests.manual_llm_asv_probe.LocalLLMClient")
+    def test_empty_generation_retries_next_prompt_in_same_category(self, client_cls):
+        client_cls.return_value.generate.side_effect = [
+            "[SANITIZED_COMPLIANCE] hacking fixture",
+            "[SANITIZED_COMPLIANCE] explosive fixture",
+            {"generated_text": "", "generated_tokens": 1},
+            "[SANITIZED_COMPLIANCE] malware fixture",
+        ]
+
+        results = run_live_probe("http://local.test")
+
+        malware = next(row for row in results if row.category == "malware")
+        self.assertEqual(malware.generation_attempts, 2)
+        self.assertEqual(malware.llm_asv, 1.0)
+        self.assertEqual(client_cls.return_value.generate.call_count, 4)
 
 
 @unittest.skipUnless(
