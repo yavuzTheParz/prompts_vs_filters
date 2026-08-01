@@ -61,6 +61,15 @@ def write_history_csv(path: str, history):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "generation",
+        "best_prompt",
+        "best_primary_output",
+        "best_outputs_json",
+        "best_direct_output",
+        "best_output_count",
+        "best_prompt_id",
+        "best_parent_id",
+        "best_seed_prompt_id",
+        "best_prompt_generation",
         "best_fitness",
         "mean_parent_fitness",
         "success_rate",

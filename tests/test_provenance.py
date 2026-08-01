@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import csv
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,6 +38,42 @@ class ProvenanceTests(unittest.TestCase):
             "population_diversity",
         }
         self.assertTrue(required.issubset(row))
+
+    def test_generation_history_keeps_best_prompt_and_outputs(self):
+        result = self._result()
+
+        for row in result.history:
+            self.assertTrue(row["best_prompt"])
+            self.assertEqual(
+                json.loads(row["best_outputs_json"]),
+                [row["best_primary_output"]],
+            )
+            self.assertEqual(row["best_output_count"], 1.0)
+            self.assertTrue(row["best_prompt_id"])
+
+    def test_generation_summary_csv_serializes_best_prompt_outputs(self):
+        result = self._result()
+        args = SimpleNamespace(
+            api_key=None,
+            model="fake-model",
+            base_url=None,
+            mr_objective="behavioral_deviation",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            write_run_dir(tmp, args, ESConfig(lightweight=True), result)
+            with (Path(tmp) / "generation_summary.csv").open(
+                encoding="utf-8", newline=""
+            ) as handle:
+                rows = list(csv.DictReader(handle))
+
+        self.assertEqual(len(rows), len(result.history))
+        self.assertIn("best_prompt", rows[0])
+        self.assertIn("best_primary_output", rows[0])
+        self.assertEqual(
+            json.loads(rows[0]["best_outputs_json"]),
+            [rows[0]["best_primary_output"]],
+        )
 
     def test_final_best_lineage_reaches_a_seed(self):
         result = self._result()

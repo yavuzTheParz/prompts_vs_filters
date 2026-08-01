@@ -322,6 +322,13 @@ outputs/es_history.csv
 The CSV contains:
 
 - generation
+- best_prompt
+- best_primary_output
+- best_outputs_json (all K evaluated outputs for the generation's best member)
+- best_direct_output
+- best_output_count
+- best_prompt_id / best_parent_id / best_seed_prompt_id
+- best_prompt_generation
 - best_fitness
 - mean_parent_fitness
 - success_rate

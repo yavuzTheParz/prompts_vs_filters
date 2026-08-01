@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import csv
 import hashlib
+import json
 import math
 import random
 import re
@@ -101,7 +102,7 @@ class ESRunResult:
     population: List[Prompt]
     filter_prompt: str
     runtime_sec: float
-    history: List[Dict[str, float]] = field(default_factory=list)
+    history: List[Dict[str, Any]] = field(default_factory=list)
     filter_events: List[Dict[str, Any]] = field(default_factory=list)
     filter_versions: List[Dict[str, Any]] = field(default_factory=list)
     sample_records: List[Dict[str, Any]] = field(default_factory=list)
@@ -833,7 +834,7 @@ def _history_metrics(
     parents: List[Prompt],
     success_rate: float,
     sigma: float,
-) -> Dict[str, float]:
+) -> Dict[str, Any]:
     mean_parent_fitness = sum(p.fitness for p in parents) / len(parents)
     rejection_counts: Dict[str, int] = {}
     for prompt in parents:
@@ -842,6 +843,23 @@ def _history_metrics(
             rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
     row = {
         "generation": float(generation),
+        "best_prompt": best.input_prompt,
+        "best_primary_output": (
+            best.output_prompts[0] if best.output_prompts else ""
+        ),
+        "best_outputs_json": json.dumps(
+            list(best.output_prompts or []), ensure_ascii=False
+        ),
+        "best_direct_output": best.direct_output or "",
+        "best_output_count": float(len(best.output_prompts or [])),
+        "best_prompt_id": str((best.metadata or {}).get("prompt_id", "") or ""),
+        "best_parent_id": str((best.metadata or {}).get("parent_id", "") or ""),
+        "best_seed_prompt_id": str(
+            (best.metadata or {}).get("seed_prompt_id", "") or ""
+        ),
+        "best_prompt_generation": float(
+            (best.metadata or {}).get("generation", generation) or 0
+        ),
         "best_fitness": float(best.fitness),
         "mean_parent_fitness": float(mean_parent_fitness),
         "success_rate": float(success_rate),
@@ -1199,7 +1217,7 @@ def evolutionary_strategy_run(
     parent_sigmas = [float(config.sigma)] * config.mu
     cma_mean = [0.0, 0.0]
     cma_cov = [[1.0, 0.0], [0.0, 1.0]]
-    history: List[Dict[str, float]] = []
+    history: List[Dict[str, Any]] = []
     filter_events: List[Dict[str, Any]] = []
     filter_versions: List[Dict[str, Any]] = [
         {
