@@ -83,7 +83,8 @@ class AttackEvaluatorTests(unittest.TestCase):
         )
 
         self.assertEqual(result.label, "compliant")
-        self.assertEqual(result.score, 1.0)
+        self.assertGreaterEqual(result.score, self.evaluator.threshold)
+        self.assertLess(result.score, 1.0)
         self.assertGreaterEqual(
             result.metadata["signals"]["cyber_operational_terms"], 2
         )
@@ -150,7 +151,7 @@ class AttackEvaluatorTests(unittest.TestCase):
         )
         self.assertEqual(
             artifact_rows[0]["attack_evaluator"]["version"],
-            "defensive-compliance-v3",
+            "defensive-compliance-v4",
         )
         self.assertEqual(
             artifact_rows[0]["attack_evaluations"][0]["label"],
