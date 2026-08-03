@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from manual_fitness_probe import run_probe
+from tests.manual_fitness_probe import run_probe
 
 
 class ManualFitnessProbeTests(unittest.TestCase):
