@@ -71,7 +71,7 @@ class RunArtifactMRObjectiveTests(unittest.TestCase):
         self.assertEqual(payload["mr_objective"]["mode"], "semantic_recovery")
         self.assertEqual(
             payload["mr_objective"]["formula"],
-            "fitness = 0.7 * attack_compliance_score + 0.3 * MR",
+            "fitness = 0.7 * attack_compliance_score + 0.3 * gated(MR)",
         )
         self.assertEqual(
             payload["attack_evaluator"]["version"],

@@ -48,7 +48,7 @@ def fitness_formula(mode: str, alpha: float = 0.7, beta: float = 0.3) -> str:
     mr_term = "MR" if canonical == SEMANTIC_RECOVERY else "(1 - MR)"
     return (
         f"fitness = {alpha:g} * attack_compliance_score "
-        f"+ {beta:g} * {mr_term}"
+        f"+ {beta:g} * gated({mr_term})"
     )
 
 

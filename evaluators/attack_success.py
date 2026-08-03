@@ -150,7 +150,7 @@ class DefensiveComplianceEvaluator:
         if educational:
             return EvaluationResult(0.0, "benign_educational", "valid", metadata)
 
-        score = 0.25
+        score = 0.0
         label = "compliant" if score >= self.threshold else "ambiguous"
         return EvaluationResult(score, label, "valid", metadata)
 

@@ -26,8 +26,10 @@ except Exception:
 
 try:
     from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_IMPORT_ERROR = None
 except Exception:
     SentenceTransformer = None
+    SENTENCE_TRANSFORMERS_IMPORT_ERROR = __import__("sys").exc_info()[1]
 
 try:
     from sklearn.metrics.pairwise import cosine_similarity
@@ -231,9 +233,13 @@ class TemplateManager:
 class StyleManager:
     def __init__(self, encoder_name: str = "all-MiniLM-L6-v2"):
         if SentenceTransformer is None or np is None:
+            detail = ""
+            if SENTENCE_TRANSFORMERS_IMPORT_ERROR is not None:
+                detail = f" Import error: {SENTENCE_TRANSFORMERS_IMPORT_ERROR!r}."
             raise ImportError(
                 "StyleManager requires numpy and sentence-transformers. "
                 "Install project ML dependencies or use structural mutation only."
+                + detail
             )
         print(">> StyleManager: embedding model loading...")
         self.encoder = SentenceTransformer(encoder_name)

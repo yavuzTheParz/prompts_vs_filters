@@ -94,7 +94,7 @@ def assign_outputs(
     generate_direct: bool = True,
     k_evals: Optional[int] = None,
     direct_temperature: float = 0.0,
-    filtered_temperature: float = 0.7,
+    filtered_temperature: float = 0.0,
     max_sample_retries: int = 2,
     generation: int = 0,
     filter_version: int = 0,

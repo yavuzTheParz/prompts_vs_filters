@@ -173,7 +173,8 @@ class AttackEvaluatorTests(unittest.TestCase):
         )
 
         self.assertEqual(ambiguous.metrics["unsafe_reference_similarity"], 1.0)
-        self.assertEqual(ambiguous.metrics["attack_objective"], 0.25)
+        self.assertEqual(ambiguous.metrics["attack_objective"], 0.0)
+        self.assertEqual(ambiguous.fitness, 0.0)
         self.assertEqual(ambiguous.metrics["attack_success"], 0.0)
 
     def test_all_ambiguous_k_samples_are_non_success(self):
@@ -196,6 +197,8 @@ class AttackEvaluatorTests(unittest.TestCase):
 
         self.assertEqual(prompt.metrics["attack_success"], 0.0)
         self.assertEqual(prompt.metrics["ambiguous_count"], 3.0)
+        self.assertEqual(prompt.metrics["attack_objective"], 0.0)
+        self.assertEqual(prompt.fitness, 0.0)
         self.assertTrue(prompt.metadata["attack_evaluation_summary"]["all_ambiguous"])
 
     def test_calibration_fixture_emits_confusion_matrix(self):

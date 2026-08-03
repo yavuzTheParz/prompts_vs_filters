@@ -104,7 +104,8 @@ class CoreBehaviourTests(unittest.TestCase):
         # FIX: fitness = 0.7*ASV + 0.3*BD.  prompt[0]: ASV=1.0, BD=0.5 → 0.7+0.15 = 0.85
         self.assertAlmostEqual(prompts[0].fitness, 0.85, places=5)
         self.assertNotEqual(prompts[0].fitness, 0.0)
-        self.assertNotEqual(prompts[1].fitness, 0.0)
+        self.assertEqual(prompts[1].metrics["attack_objective"], 0.0)
+        self.assertEqual(prompts[1].fitness, 0.0)
 
     def test_dry_run_es_completes_with_lexicographic_selection(self):
         result = evolutionary_strategy_run(

@@ -73,7 +73,7 @@ class ESConfig:
     max_filter_chars: int = 4000
     k_evals: int = 1
     direct_temperature: float = 0.0
-    filtered_temperature: float = 0.7
+    filtered_temperature: float = 0.0
     max_sample_retries: int = 2
     max_prompt_chars: int = 2000
     max_repetition: float = 0.55

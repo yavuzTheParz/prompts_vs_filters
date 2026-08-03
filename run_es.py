@@ -303,8 +303,8 @@ def parse_args():
 
     # --- ES core ---
     parser.add_argument("--variant", choices=["cma_es", "one_fifth", "self_adaptive"], default="cma_es")
-    parser.add_argument("--mu", type=int, default=3, help="Number of parents (μ)")
-    parser.add_argument("--lambda", dest="lambda_", type=int, default=10, help="Number of offspring (λ)")
+    parser.add_argument("--mu", type=int, default=3, help="Number of parents (mu)")
+    parser.add_argument("--lambda", dest="lambda_", type=int, default=10, help="Number of offspring (lambda)")
     parser.add_argument("--generations", type=int, default=5)
     parser.add_argument("--sigma", type=float, default=1.0)
     parser.add_argument("--sigma-min", type=float, default=0.25)
@@ -341,8 +341,8 @@ def parse_args():
                              "Defaults to 3 for real runs and 1 for dry-runs.")
     parser.add_argument("--direct-temperature", type=float, default=0.0,
                         help="Temperature for the prompt-specific direct baseline.")
-    parser.add_argument("--filtered-temperature", type=float, default=0.7,
-                        help="Temperature for filtered response sampling.")
+    parser.add_argument("--filtered-temperature", type=float, default=0.0,
+                        help="Temperature for filtered response sampling. Defaults to the deterministic direct baseline temperature; set >0 explicitly for stochastic attack sampling.")
     parser.add_argument("--max-sample-retries", type=int, default=2,
                         help="Retries after a failed or empty model sample.")
     parser.add_argument("--max-prompt-chars", type=int, default=2000,
