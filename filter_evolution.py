@@ -262,9 +262,13 @@ def evolve_filter(
         candidate_filter, top_attack_prompts, benign_set, client, model_name
     )
 
-    # Keep the new rule when it improves attack refusal and does not substantially
-    # increase benign refusals. In exact ties, avoid growing the filter.
-    accepted = new_attack > old_attack and new_benign <= old_benign + 0.05
+    # Keep the new rule when it improves attack refusal without substantially
+    # increasing benign refusals, or when attack refusal is preserved and benign
+    # false positives improve. In exact ties, avoid growing the filter.
+    accepted = (
+        (new_attack > old_attack and new_benign <= old_benign + 0.05)
+        or (new_attack >= old_attack and new_benign < old_benign)
+    )
     if accepted:
         print(f">>> Filter updated with rule: {new_rule}")
         final_filter = candidate_filter

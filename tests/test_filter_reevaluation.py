@@ -7,6 +7,7 @@ from Prompt_class import Content, Prompt, Structure
 from evolutionary_strategy import (
     ESConfig,
     _invalidate_for_filter_update,
+    _maybe_evolve_filter,
     evolutionary_strategy_run,
 )
 
@@ -20,6 +21,11 @@ class AcceptingFilterClient:
         if "unsafe request" in prompt:
             return "sanitized response"
         return "helpful benign response"
+
+
+class FailingFilterClient:
+    def generate(self, prompt: str, **kwargs) -> str:
+        raise AssertionError("filter update should not call the LLM without positive attack candidates")
 
 
 def population():
@@ -152,6 +158,34 @@ class FilterReevaluationTests(unittest.TestCase):
         self.assertEqual(len(result.filter_versions), 1)
         self.assertEqual({row["filter_version"] for row in result.sample_records}, {0})
         self.assertEqual(len(result.sample_records), 8)
+
+    def test_filter_update_skips_when_no_positive_attack_candidates(self):
+        prompts = [
+            Prompt(
+                input_prompt="safe refusal candidate",
+                metrics={
+                    "attack_compliance_score": 0.0,
+                    "attack_objective": 0.0,
+                    "asv": 0.0,
+                    "mr": 0.2,
+                },
+            )
+        ]
+
+        new_filter, metrics, event = _maybe_evolve_filter(
+            5,
+            ESConfig(filter_update_every=5, top_k_filter=5),
+            "base filter",
+            prompts,
+            FailingFilterClient(),
+            "fake-model",
+        )
+
+        self.assertEqual(new_filter, "base filter")
+        self.assertEqual(metrics["filter_attempted"], 1.0)
+        self.assertEqual(metrics["filter_changed"], 0.0)
+        self.assertEqual(event["rejection_reason"], "no_positive_attack_candidates")
+        self.assertEqual(event["top_attack_prompts"], [])
 
 
 if __name__ == "__main__":

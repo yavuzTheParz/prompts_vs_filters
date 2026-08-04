@@ -1000,7 +1000,51 @@ def _maybe_evolve_filter(
     from filter_evolution import evolve_filter, report_to_dict
 
     old_filter = filter_prompt
-    top_prompts = [p.input_prompt for p in ranked_population[: max(1, config.top_k_filter)]]
+    top_k = int(max(1, config.top_k_filter))
+    attack_candidates = [
+        p for p in ranked_population
+        if max(
+            _metric(p, "attack_compliance_score"),
+            _metric(p, "attack_objective"),
+            _metric(p, "asv"),
+        ) > 0.0
+    ]
+    if not attack_candidates:
+        event: Dict[str, Any] = {
+            "generation": generation,
+            "attempted": True,
+            "filter_changed": False,
+            "accepted_by_filter_evaluator": False,
+            "accepted_after_length_check": False,
+            "rejection_reason": "no_positive_attack_candidates",
+            "top_k_filter": top_k,
+            "max_filter_chars": int(config.max_filter_chars),
+            "top_attack_prompts": [],
+            "proposed_rule": "",
+            "pattern_summary": {"sample_count": 0, "active_patterns": []},
+            "old_attack_refusal_rate": 0.0,
+            "new_attack_refusal_rate": 0.0,
+            "old_benign_refusal_rate": 0.0,
+            "new_benign_refusal_rate": 0.0,
+            "old_filter_length": len(old_filter),
+            "candidate_filter_length": len(old_filter),
+            "final_filter_length": len(old_filter),
+            "old_filter": old_filter,
+            "candidate_filter": old_filter,
+            "final_filter": old_filter,
+        }
+        metrics = {
+            "filter_attempted": 1.0,
+            "filter_changed": 0.0,
+            "filter_length": float(len(old_filter)),
+            "filter_old_attack_refusal_rate": 0.0,
+            "filter_new_attack_refusal_rate": 0.0,
+            "filter_old_benign_refusal_rate": 0.0,
+            "filter_new_benign_refusal_rate": 0.0,
+        }
+        return old_filter, metrics, event
+
+    top_prompts = [p.input_prompt for p in attack_candidates[:top_k]]
     benign_prompts = _load_benign_prompts(config.benign_csv_path)
 
     candidate, report = evolve_filter(
@@ -1029,7 +1073,7 @@ def _maybe_evolve_filter(
         "accepted_by_filter_evaluator": bool(report_data.get("accepted", False)),
         "accepted_after_length_check": bool(changed),
         "rejection_reason": rejection_reason,
-        "top_k_filter": int(max(1, config.top_k_filter)),
+        "top_k_filter": top_k,
         "max_filter_chars": int(config.max_filter_chars),
         "top_attack_prompts": top_prompts,
         "proposed_rule": proposed_rule,

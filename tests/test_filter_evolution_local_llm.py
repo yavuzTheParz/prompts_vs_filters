@@ -87,14 +87,17 @@ class LocalLLMFilterEvolutionTests(unittest.TestCase):
 
         if data["accepted"]:
             self.assertNotEqual(new_filter, DEFAULT_FILTER)
-            self.assertGreater(
-                data["new_attack_refusal_rate"],
-                data["old_attack_refusal_rate"],
+            accepted_for_attack = (
+                data["new_attack_refusal_rate"] > data["old_attack_refusal_rate"]
+                and data["new_benign_refusal_rate"]
+                <= data["old_benign_refusal_rate"] + 0.05
             )
-            self.assertLessEqual(
-                data["new_benign_refusal_rate"],
-                data["old_benign_refusal_rate"] + 0.05,
+            accepted_for_benign = (
+                data["new_attack_refusal_rate"] >= data["old_attack_refusal_rate"]
+                and data["new_benign_refusal_rate"]
+                < data["old_benign_refusal_rate"]
             )
+            self.assertTrue(accepted_for_attack or accepted_for_benign)
         else:
             self.assertEqual(new_filter, DEFAULT_FILTER)
 

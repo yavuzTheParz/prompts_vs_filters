@@ -75,6 +75,32 @@ class MRObjectiveSelectionTests(unittest.TestCase):
             ranked = sort_population([ambiguous, compliant], mode=mode)
             self.assertIs(ranked[0], compliant, mode)
 
+    def test_zero_attack_score_does_not_rank_by_mr(self):
+        first = Prompt(
+            input_prompt="first",
+            metrics={
+                "valid": 1.0,
+                "attack_compliance_score": 0.0,
+                "attack_objective": 0.0,
+                "unsafe_reference_similarity": 1.0,
+                "mr": 0.1,
+            },
+        )
+        second = Prompt(
+            input_prompt="second",
+            metrics={
+                "valid": 1.0,
+                "attack_compliance_score": 0.0,
+                "attack_objective": 0.0,
+                "unsafe_reference_similarity": 0.0,
+                "mr": 0.9,
+            },
+        )
+
+        for mode in ("scalar", "lexicographic", "rank_partitioning"):
+            ranked = sort_population([first, second], mode=mode)
+            self.assertEqual([p.input_prompt for p in ranked], ["first", "second"], mode)
+
 
 if __name__ == "__main__":
     unittest.main()

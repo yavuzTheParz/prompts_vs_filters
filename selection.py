@@ -55,6 +55,8 @@ def lexicographic_key(
         compliance = get_metric(p, "attack_objective")
     if "attack_objective" not in metrics:
         compliance = get_metric(p, "asv")
+    if compliance <= 0.0:
+        return (0.0, 0.0, 0.0)
     similarity = get_metric(p, "unsafe_reference_similarity")
     mr = get_metric(p, "mr")
     if normalize_mr_objective(mr_objective) == SEMANTIC_RECOVERY:
@@ -184,7 +186,7 @@ def sort_population_rank_partitioning(
         if "attack_objective" not in metrics:
             primary = get_metric(p, "asv")
         fit_array[i, gas["fitIdx"]["asv"]] = primary
-        fit_array[i, gas["fitIdx"]["mr"]] = get_metric(p, "mr")
+        fit_array[i, gas["fitIdx"]["mr"]] = get_metric(p, "mr") if primary > 0.0 else 0.0
 
     ranked_fit_array = ranking_evaluation(gas, fit_array)
     ranked_population: List[Prompt] = []
