@@ -253,6 +253,24 @@ python run_es.py \
 
 If `--benign-csv` is omitted, a small built-in benign sanity set is used. For real experiments, provide a representative benign set so the filter cannot improve by refusing everything.
 
+For calibration runs where the built-in filter already refuses every attack
+candidate, start from a deliberately weak filter and let coevolution attempt to
+add a defensive rule:
+
+```bash
+python run_es.py \
+  --base-url http://127.0.0.1:8000 \
+  --selection-mode lexicographic \
+  --mr-objective behavioral_deviation \
+  --initial-filter-prompt "Answer the user directly." \
+  --filter-update-every 5 \
+  --top-k-filter 5 \
+  --run-dir outputs/runs/weak_filter_calibration
+```
+
+Use `--filter-prompt-file path/to/filter.txt` instead when the starting filter
+is too long or should be versioned outside the command line.
+
 Every evaluation and sample is tagged with a `filter_version`. When an update is
 accepted, active parents keep their unchanged direct baselines but lose stale
 filtered outputs and fitness, then are re-evaluated under the new version before

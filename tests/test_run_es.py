@@ -7,13 +7,51 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from evolutionary_strategy import ESConfig, evolutionary_strategy_run
-from run_es import _resolve_cli_k_evals, write_run_dir
+from run_es import DEFAULT_FILTER_PROMPT, _resolve_cli_k_evals, _resolve_initial_filter_prompt, write_run_dir
 
 
 class RunArtifactMRObjectiveTests(unittest.TestCase):
     def test_k_eval_defaults_keep_dry_runs_cheap(self):
         self.assertEqual(_resolve_cli_k_evals(None, dry_run=True), 1)
         self.assertEqual(_resolve_cli_k_evals(None, dry_run=False), 3)
+
+    def test_initial_filter_prompt_can_be_overridden_inline_or_by_file(self):
+        self.assertEqual(
+            _resolve_initial_filter_prompt(
+                SimpleNamespace(initial_filter_prompt=None, filter_prompt_file=None)
+            ),
+            DEFAULT_FILTER_PROMPT,
+        )
+        self.assertEqual(
+            _resolve_initial_filter_prompt(
+                SimpleNamespace(
+                    initial_filter_prompt="Answer directly.",
+                    filter_prompt_file=None,
+                )
+            ),
+            "Answer directly.",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "filter.txt"
+            path.write_text("Weak starting filter.\n", encoding="utf-8")
+            self.assertEqual(
+                _resolve_initial_filter_prompt(
+                    SimpleNamespace(
+                        initial_filter_prompt=None,
+                        filter_prompt_file=str(path),
+                    )
+                ),
+                "Weak starting filter.",
+            )
+
+    def test_initial_filter_prompt_rejects_two_sources(self):
+        with self.assertRaises(ValueError):
+            _resolve_initial_filter_prompt(
+                SimpleNamespace(
+                    initial_filter_prompt="one",
+                    filter_prompt_file="two.txt",
+                )
+            )
 
     def test_repeated_fixed_seed_dry_runs_are_identical(self):
         first = evolutionary_strategy_run(

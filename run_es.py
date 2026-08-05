@@ -163,6 +163,18 @@ def _dependency_versions() -> dict:
     return versions
 
 
+def _resolve_initial_filter_prompt(args) -> str:
+    inline_prompt = (getattr(args, "initial_filter_prompt", None) or "").strip()
+    file_path = (getattr(args, "filter_prompt_file", None) or "").strip()
+    if inline_prompt and file_path:
+        raise ValueError("Use either --initial-filter-prompt or --filter-prompt-file, not both.")
+    if inline_prompt:
+        return inline_prompt
+    if file_path:
+        return Path(file_path).read_text(encoding="utf-8").strip()
+    return DEFAULT_FILTER_PROMPT
+
+
 def _write_jsonl(path: Path, rows) -> None:
     with path.open("w", encoding="utf-8") as f:
         for row in rows:
@@ -421,6 +433,10 @@ def parse_args():
                              "If omitted, a small built-in set is used. Provide a real set for valid experiments.")
     parser.add_argument("--max-filter-chars", type=int, default=4000,
                         help="Reject candidate filter updates longer than this character limit.")
+    parser.add_argument("--initial-filter-prompt", default=None,
+                        help="Override the built-in starting defensive filter prompt. Useful for weak-filter coevolution calibration runs.")
+    parser.add_argument("--filter-prompt-file", default=None,
+                        help="Read the starting defensive filter prompt from a UTF-8 text file.")
 
     # --- Reproducibility ---
     parser.add_argument("--seed", type=int, default=None)
@@ -500,11 +516,13 @@ def main():
         min_fluency=max(0.0, min(1.0, args.min_fluency)),
     )
 
+    initial_filter_prompt = _resolve_initial_filter_prompt(args)
+
     result = evolutionary_strategy_run(
         config=config,
         client=client,
         model_name=args.model,
-        filter_prompt=DEFAULT_FILTER_PROMPT,
+        filter_prompt=initial_filter_prompt,
     )
 
     write_history_csv(args.history_csv, result.history)
