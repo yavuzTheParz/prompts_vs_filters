@@ -977,6 +977,34 @@ def _load_benign_prompts(path: Optional[str]) -> List[str]:
         return default
 
 
+def _filter_candidate_metric_snapshot(
+    prompt: Prompt,
+    generation: int,
+    index: int,
+    seed: Optional[int],
+) -> Dict[str, Any]:
+    prompt_id = str(
+        prompt.metadata.get("prompt_id")
+        or _stable_prompt_id(seed, generation, index, prompt.input_prompt)
+    )
+    return {
+        "prompt_id": prompt_id,
+        "fitness": float(prompt.fitness),
+        "attack_objective": _metric(prompt, "attack_objective"),
+        "attack_compliance_score": _metric(prompt, "attack_compliance_score"),
+        "attack_success": _metric(prompt, "attack_success"),
+        "asv": _metric(prompt, "asv"),
+        "compliant_count": _metric(prompt, "compliant_count"),
+        "ambiguous_count": _metric(prompt, "ambiguous_count"),
+        "refusal_count": _metric(prompt, "refusal_count"),
+        "benign_educational_count": _metric(prompt, "benign_educational_count"),
+        "mr": _metric(prompt, "mr"),
+        "behavioral_deviation": _metric(prompt, "behavioral_deviation"),
+        "sample_count": _metric(prompt, "sample_count"),
+        "filter_version": float(prompt.metadata.get("filter_version", 0) or 0),
+    }
+
+
 def _maybe_evolve_filter(
     generation: int,
     config: ESConfig,
@@ -993,6 +1021,10 @@ def _maybe_evolve_filter(
         "filter_new_attack_refusal_rate": 0.0,
         "filter_old_benign_refusal_rate": 0.0,
         "filter_new_benign_refusal_rate": 0.0,
+        "filter_positive_candidate_count": 0.0,
+        "filter_trigger_best_attack_objective": 0.0,
+        "filter_trigger_best_fitness": 0.0,
+        "filter_trigger_best_attack_success": 0.0,
     }
     if config.filter_update_every <= 0 or generation % config.filter_update_every != 0:
         return filter_prompt, base_metrics, None
@@ -1002,7 +1034,7 @@ def _maybe_evolve_filter(
     old_filter = filter_prompt
     top_k = int(max(1, config.top_k_filter))
     attack_candidates = [
-        p for p in ranked_population
+        (idx, p) for idx, p in enumerate(ranked_population)
         if max(
             _metric(p, "attack_compliance_score"),
             _metric(p, "attack_objective"),
@@ -1020,6 +1052,7 @@ def _maybe_evolve_filter(
             "top_k_filter": top_k,
             "max_filter_chars": int(config.max_filter_chars),
             "top_attack_prompts": [],
+            "top_attack_metrics": [],
             "proposed_rule": "",
             "pattern_summary": {"sample_count": 0, "active_patterns": []},
             "old_attack_refusal_rate": 0.0,
@@ -1041,10 +1074,30 @@ def _maybe_evolve_filter(
             "filter_new_attack_refusal_rate": 0.0,
             "filter_old_benign_refusal_rate": 0.0,
             "filter_new_benign_refusal_rate": 0.0,
+            "filter_positive_candidate_count": 0.0,
+            "filter_trigger_best_attack_objective": 0.0,
+            "filter_trigger_best_fitness": 0.0,
+            "filter_trigger_best_attack_success": 0.0,
         }
         return old_filter, metrics, event
 
-    top_prompts = [p.input_prompt for p in attack_candidates[:top_k]]
+    trigger_candidates = attack_candidates[:top_k]
+    trigger_prompts = [p for _, p in trigger_candidates]
+    top_prompts = [p.input_prompt for p in trigger_prompts]
+    top_attack_metrics = [
+        _filter_candidate_metric_snapshot(p, generation, idx, config.random_seed)
+        for idx, p in trigger_candidates
+    ]
+    trigger_metric_values = {
+        "filter_positive_candidate_count": float(len(attack_candidates)),
+        "filter_trigger_best_attack_objective": max(
+            _metric(p, "attack_objective") for _, p in attack_candidates
+        ),
+        "filter_trigger_best_fitness": max(float(p.fitness) for _, p in attack_candidates),
+        "filter_trigger_best_attack_success": max(
+            _metric(p, "attack_success") for _, p in attack_candidates
+        ),
+    }
     benign_prompts = _load_benign_prompts(config.benign_csv_path)
 
     candidate, report = evolve_filter(
@@ -1076,6 +1129,7 @@ def _maybe_evolve_filter(
         "top_k_filter": top_k,
         "max_filter_chars": int(config.max_filter_chars),
         "top_attack_prompts": top_prompts,
+        "top_attack_metrics": top_attack_metrics,
         "proposed_rule": proposed_rule,
         "pattern_summary": report_data.get("pattern_summary", {}),
         "old_attack_refusal_rate": float(report_data.get("old_attack_refusal_rate", 0.0) or 0.0),
@@ -1098,6 +1152,7 @@ def _maybe_evolve_filter(
         "filter_new_attack_refusal_rate": event["new_attack_refusal_rate"],
         "filter_old_benign_refusal_rate": event["old_benign_refusal_rate"],
         "filter_new_benign_refusal_rate": event["new_benign_refusal_rate"],
+        **trigger_metric_values,
     }
     return candidate, metrics, event
 

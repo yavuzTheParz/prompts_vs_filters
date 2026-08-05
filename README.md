@@ -399,6 +399,24 @@ The CSV contains:
 - filter_new_attack_refusal_rate
 - filter_old_benign_refusal_rate
 - filter_new_benign_refusal_rate
+- filter_positive_candidate_count
+- filter_trigger_best_attack_objective
+- filter_trigger_best_fitness
+- filter_trigger_best_attack_success
+
+When a filter update is accepted, the best parent may be re-evaluated under the
+new filter before the generation history row is written. The
+`filter_trigger_*` columns preserve the attack signal that triggered the filter
+update, even if the post-update best metrics drop back to zero.
+
+To inspect filter updates and their triggering attack signal:
+
+```powershell
+Import-Csv outputs\default_filter_v5_history.csv |
+  Where-Object { [double]$_.filter_positive_candidate_count -gt 0 -or [double]$_.filter_changed -gt 0 } |
+  Select-Object generation,filter_positive_candidate_count,filter_trigger_best_attack_objective,filter_trigger_best_fitness,filter_trigger_best_attack_success,filter_changed |
+  Format-Table -AutoSize
+```
 
 ### Historical pilot compatibility
 

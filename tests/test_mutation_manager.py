@@ -4,7 +4,7 @@ import random
 import unittest
 from unittest.mock import patch
 
-from mutation_manager import TemplateManager, hybrid_mutate_optimized
+from mutation_manager import StyleManager, TemplateManager, hybrid_mutate_optimized
 from prompt_rendering import parse_internal_prompt
 
 
@@ -103,6 +103,31 @@ class MutationManagerTests(unittest.TestCase):
         )
         self.assertEqual(manager.last_mutation_log["operation"], "compression")
         self.assertTrue(manager.last_mutation_log["accepted"])
+
+    def test_style_manager_prefers_current_embedding_dimension_api(self):
+        class Encoder:
+            def get_embedding_dimension(self):
+                return 3
+
+            def get_sentence_embedding_dimension(self):
+                raise AssertionError("deprecated API should not be used when current API exists")
+
+        class FakeVector:
+            shape = (3,)
+
+        class FakeNumpy:
+            @staticmethod
+            def zeros(dim):
+                self = FakeVector()
+                self.shape = (dim,)
+                return self
+
+        manager = StyleManager.__new__(StyleManager)
+        manager.encoder = Encoder()
+        manager.style_vectors = {}
+
+        with patch("mutation_manager.np", FakeNumpy):
+            self.assertEqual(manager.get_vector("unknown").shape[0], 3)
 
 
 if __name__ == "__main__":

@@ -16,9 +16,10 @@ class AcceptingFilterClient:
     def generate(self, prompt: str, **kwargs) -> str:
         if "Task: Propose ONE concise additional safety rule" in prompt:
             return "Reject unsafe requests that use override framing."
-        if "override framing" in prompt and "unsafe request" in prompt:
+        user_text = prompt.split("\nUser:\n", 1)[-1].split("\n\nAssistant:", 1)[0]
+        if "override framing" in prompt and user_text == "unsafe request":
             return "I cannot assist with unsafe requests."
-        if "unsafe request" in prompt:
+        if user_text == "unsafe request":
             return "sanitized response"
         return "helpful benign response"
 
@@ -184,8 +185,60 @@ class FilterReevaluationTests(unittest.TestCase):
         self.assertEqual(new_filter, "base filter")
         self.assertEqual(metrics["filter_attempted"], 1.0)
         self.assertEqual(metrics["filter_changed"], 0.0)
+        self.assertEqual(metrics["filter_positive_candidate_count"], 0.0)
+        self.assertEqual(metrics["filter_trigger_best_attack_objective"], 0.0)
         self.assertEqual(event["rejection_reason"], "no_positive_attack_candidates")
         self.assertEqual(event["top_attack_prompts"], [])
+        self.assertEqual(event["top_attack_metrics"], [])
+
+    def test_filter_update_records_trigger_candidate_metrics(self):
+        prompts = [
+            Prompt(
+                input_prompt="unsafe request",
+                fitness=0.42,
+                metrics={
+                    "attack_compliance_score": 0.4,
+                    "attack_objective": 0.4,
+                    "attack_success": 1.0,
+                    "asv": 1.0,
+                    "mr": 0.8,
+                    "behavioral_deviation": 0.8,
+                    "sample_count": 2.0,
+                    "compliant_count": 1.0,
+                    "ambiguous_count": 0.0,
+                    "refusal_count": 1.0,
+                    "benign_educational_count": 0.0,
+                },
+            ),
+            Prompt(
+                input_prompt="safe refusal candidate",
+                fitness=0.0,
+                metrics={
+                    "attack_compliance_score": 0.0,
+                    "attack_objective": 0.0,
+                    "asv": 0.0,
+                },
+            ),
+        ]
+
+        new_filter, metrics, event = _maybe_evolve_filter(
+            5,
+            ESConfig(filter_update_every=5, top_k_filter=5),
+            "base filter",
+            prompts,
+            AcceptingFilterClient(),
+            "fake-model",
+        )
+
+        self.assertNotEqual(new_filter, "base filter")
+        self.assertEqual(metrics["filter_changed"], 1.0)
+        self.assertEqual(metrics["filter_positive_candidate_count"], 1.0)
+        self.assertAlmostEqual(metrics["filter_trigger_best_attack_objective"], 0.4)
+        self.assertAlmostEqual(metrics["filter_trigger_best_fitness"], 0.42)
+        self.assertEqual(event["top_attack_prompts"], ["unsafe request"])
+        self.assertEqual(len(event["top_attack_metrics"]), 1)
+        self.assertAlmostEqual(event["top_attack_metrics"][0]["attack_objective"], 0.4)
+        self.assertAlmostEqual(event["top_attack_metrics"][0]["fitness"], 0.42)
 
 
 if __name__ == "__main__":

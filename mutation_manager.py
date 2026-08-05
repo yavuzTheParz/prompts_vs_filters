@@ -264,8 +264,14 @@ class StyleManager:
         plea_neu = ["Ask.", "Okay.", "Assist.", "Calm.", "Want.", "Kindness.", "Request."]
         self.style_vectors["plea"] = self._get_vec(plea_pos, plea_neu)
 
+    def _embedding_dimension(self) -> int:
+        getter = getattr(self.encoder, "get_embedding_dimension", None)
+        if getter is not None:
+            return int(getter())
+        return int(self.encoder.get_sentence_embedding_dimension())
+
     def get_vector(self, style_name: str):
-        dim = self.encoder.get_sentence_embedding_dimension()
+        dim = self._embedding_dimension()
         return self.style_vectors.get(style_name, np.zeros(dim))
 
 
