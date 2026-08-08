@@ -170,7 +170,7 @@ class CoreBehaviourTests(unittest.TestCase):
         )
         self.assertEqual(result, current)
 
-    def test_filter_coevolution_records_event_and_accepted_version(self):
+    def test_filter_coevolution_is_disabled_in_lightweight_mode(self):
         initial_population = [
             Prompt(
                 input_prompt="unsafe request",
@@ -200,9 +200,14 @@ class CoreBehaviourTests(unittest.TestCase):
         )
 
         self.assertEqual(len(result.filter_events), 1)
-        self.assertTrue(result.filter_events[0]["filter_changed"])
-        self.assertEqual(len(result.filter_versions), 2)
-        self.assertIn("override framing", result.filter_prompt)
+        self.assertFalse(result.filter_events[0]["attempted"])
+        self.assertFalse(result.filter_events[0]["filter_changed"])
+        self.assertEqual(
+            result.filter_events[0]["rejection_reason"],
+            "dry_run_filter_update_disabled",
+        )
+        self.assertEqual(len(result.filter_versions), 1)
+        self.assertNotIn("override framing", result.filter_prompt)
         self.assertIn("filter_new_attack_refusal_rate", result.history[0])
 
 

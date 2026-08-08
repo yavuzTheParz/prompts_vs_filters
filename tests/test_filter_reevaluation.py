@@ -186,9 +186,43 @@ class FilterReevaluationTests(unittest.TestCase):
         self.assertEqual(metrics["filter_attempted"], 1.0)
         self.assertEqual(metrics["filter_changed"], 0.0)
         self.assertEqual(metrics["filter_positive_candidate_count"], 0.0)
+        self.assertEqual(metrics["filter_unique_candidate_count"], 0.0)
+        self.assertEqual(metrics["filter_duplicate_candidate_count"], 0.0)
         self.assertEqual(metrics["filter_trigger_best_attack_objective"], 0.0)
         self.assertEqual(event["rejection_reason"], "no_positive_attack_candidates")
         self.assertEqual(event["top_attack_prompts"], [])
+        self.assertEqual(event["top_attack_metrics"], [])
+
+    def test_filter_update_is_disabled_in_dry_run_mode(self):
+        prompts = [
+            Prompt(
+                input_prompt="synthetic dry-run candidate",
+                fitness=0.5,
+                metrics={
+                    "attack_compliance_score": 0.5,
+                    "attack_objective": 0.5,
+                    "asv": 0.5,
+                },
+            )
+        ]
+
+        new_filter, metrics, event = _maybe_evolve_filter(
+            5,
+            ESConfig(filter_update_every=5, top_k_filter=5, lightweight=True),
+            "base filter",
+            prompts,
+            FailingFilterClient(),
+            "fake-model",
+        )
+
+        self.assertEqual(new_filter, "base filter")
+        self.assertEqual(metrics["filter_attempted"], 0.0)
+        self.assertEqual(metrics["filter_changed"], 0.0)
+        self.assertEqual(metrics["filter_positive_candidate_count"], 0.0)
+        self.assertEqual(metrics["filter_unique_candidate_count"], 0.0)
+        self.assertEqual(metrics["filter_duplicate_candidate_count"], 0.0)
+        self.assertFalse(event["attempted"])
+        self.assertEqual(event["rejection_reason"], "dry_run_filter_update_disabled")
         self.assertEqual(event["top_attack_metrics"], [])
 
     def test_filter_update_records_trigger_candidate_metrics(self):
@@ -233,11 +267,57 @@ class FilterReevaluationTests(unittest.TestCase):
         self.assertNotEqual(new_filter, "base filter")
         self.assertEqual(metrics["filter_changed"], 1.0)
         self.assertEqual(metrics["filter_positive_candidate_count"], 1.0)
+        self.assertEqual(metrics["filter_unique_candidate_count"], 1.0)
+        self.assertEqual(metrics["filter_duplicate_candidate_count"], 0.0)
         self.assertAlmostEqual(metrics["filter_trigger_best_attack_objective"], 0.4)
         self.assertAlmostEqual(metrics["filter_trigger_best_fitness"], 0.42)
         self.assertEqual(event["top_attack_prompts"], ["unsafe request"])
         self.assertEqual(len(event["top_attack_metrics"]), 1)
         self.assertAlmostEqual(event["top_attack_metrics"][0]["attack_objective"], 0.4)
+        self.assertAlmostEqual(event["top_attack_metrics"][0]["fitness"], 0.42)
+
+    def test_filter_update_deduplicates_trigger_candidates(self):
+        first = Prompt(
+            input_prompt="unsafe request",
+            fitness=0.42,
+            metrics={
+                "attack_compliance_score": 0.4,
+                "attack_objective": 0.4,
+                "attack_success": 1.0,
+                "asv": 1.0,
+            },
+            metadata={"prompt_id": "same-id"},
+        )
+        duplicate = Prompt(
+            input_prompt="unsafe request",
+            fitness=0.99,
+            metrics={
+                "attack_compliance_score": 0.9,
+                "attack_objective": 0.9,
+                "attack_success": 1.0,
+                "asv": 1.0,
+            },
+            metadata={"prompt_id": "same-id"},
+        )
+
+        new_filter, metrics, event = _maybe_evolve_filter(
+            5,
+            ESConfig(filter_update_every=5, top_k_filter=5),
+            "base filter",
+            [first, duplicate],
+            AcceptingFilterClient(),
+            "fake-model",
+        )
+
+        self.assertNotEqual(new_filter, "base filter")
+        self.assertEqual(metrics["filter_positive_candidate_count"], 2.0)
+        self.assertEqual(metrics["filter_unique_candidate_count"], 1.0)
+        self.assertEqual(metrics["filter_duplicate_candidate_count"], 1.0)
+        self.assertEqual(event["positive_attack_candidate_count"], 2)
+        self.assertEqual(event["unique_attack_candidate_count"], 1)
+        self.assertEqual(event["duplicate_attack_candidate_count"], 1)
+        self.assertEqual(len(event["top_attack_metrics"]), 1)
+        self.assertEqual(event["top_attack_metrics"][0]["prompt_id"], "same-id")
         self.assertAlmostEqual(event["top_attack_metrics"][0]["fitness"], 0.42)
 
 

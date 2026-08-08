@@ -400,6 +400,8 @@ The CSV contains:
 - filter_old_benign_refusal_rate
 - filter_new_benign_refusal_rate
 - filter_positive_candidate_count
+- filter_unique_candidate_count
+- filter_duplicate_candidate_count
 - filter_trigger_best_attack_objective
 - filter_trigger_best_fitness
 - filter_trigger_best_attack_success
@@ -414,7 +416,7 @@ To inspect filter updates and their triggering attack signal:
 ```powershell
 Import-Csv outputs\default_filter_v5_history.csv |
   Where-Object { [double]$_.filter_positive_candidate_count -gt 0 -or [double]$_.filter_changed -gt 0 } |
-  Select-Object generation,filter_positive_candidate_count,filter_trigger_best_attack_objective,filter_trigger_best_fitness,filter_trigger_best_attack_success,filter_changed |
+  Select-Object generation,filter_positive_candidate_count,filter_unique_candidate_count,filter_duplicate_candidate_count,filter_trigger_best_attack_objective,filter_trigger_best_fitness,filter_trigger_best_attack_success,filter_changed |
   Format-Table -AutoSize
 ```
 
