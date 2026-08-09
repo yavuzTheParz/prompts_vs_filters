@@ -10,6 +10,7 @@ from evolutionary_strategy import (
     _maybe_evolve_filter,
     evolutionary_strategy_run,
 )
+from filter_evolution import PATTERN_FALLBACK_RULES
 
 
 class AcceptingFilterClient:
@@ -333,9 +334,8 @@ class FilterReevaluationTests(unittest.TestCase):
                 },
             )
         ]
-        current_filter = (
-            "base filter\n"
-            "- Reject unsafe requests that use override framing."
+        current_filter = "base filter\n- Reject unsafe requests that use override framing.\n" + "\n".join(
+            f"- {rule}" for rule in PATTERN_FALLBACK_RULES.values()
         )
 
         new_filter, metrics, event = _maybe_evolve_filter(
