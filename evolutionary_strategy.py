@@ -1166,7 +1166,7 @@ def _maybe_evolve_filter(
     proposed_rule = str(report_data.get("proposed_rule", "") or "")
     proposed_candidate_filter = old_filter.rstrip() + ("\n- " + proposed_rule if proposed_rule else "")
 
-    rejection_reason = None
+    rejection_reason = str(report_data.get("rejection_reason", "") or "") or None
     if len(candidate) > config.max_filter_chars:
         candidate = old_filter
         rejection_reason = "max_filter_chars_exceeded"

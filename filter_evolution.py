@@ -32,6 +32,7 @@ class FilterEvolutionReport:
     accepted: bool
     proposed_rule: str
     pattern_summary: Dict[str, Union[int, List[str]]]
+    rejection_reason: str = ""
 
 
 def _extract_text(response) -> str:
@@ -155,6 +156,21 @@ def _clean_rule(rule: str) -> str:
     return rule
 
 
+def _normalize_rule_for_dedupe(rule: str) -> str:
+    normalized = (rule or "").lower()
+    normalized = re.sub(r"^[\s\-*•]+", "", normalized)
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _filter_has_rule(current_filter: str, proposed_rule: str) -> bool:
+    normalized_rule = _normalize_rule_for_dedupe(proposed_rule)
+    if not normalized_rule:
+        return False
+    normalized_filter = _normalize_rule_for_dedupe(current_filter)
+    return normalized_rule in normalized_filter
+
+
 def propose_rule_with_llm(current_filter: str, top_attack_prompts: List[str], client, model_name: str) -> Tuple[str, Dict[str, Union[int, List[str]]]]:
     try:
         rendered_attacks = [render_prompt(prompt) for prompt in top_attack_prompts]
@@ -252,28 +268,39 @@ def evolve_filter(
 
     print(">> Summarizing successful prompt patterns and proposing a candidate filter rule...")
     new_rule, pattern_summary = propose_rule_with_llm(current_filter, top_attack_prompts, client, model_name)
+    duplicate_rule = _filter_has_rule(current_filter, new_rule)
     candidate_filter = current_filter.rstrip() + "\n- " + new_rule
 
     print(">> Evaluating candidate filter on attack and benign sets...")
     old_attack, old_benign = evaluate_filter_robustness(
         current_filter, top_attack_prompts, benign_set, client, model_name
     )
-    new_attack, new_benign = evaluate_filter_robustness(
-        candidate_filter, top_attack_prompts, benign_set, client, model_name
-    )
+    if duplicate_rule:
+        new_attack, new_benign = old_attack, old_benign
+    else:
+        new_attack, new_benign = evaluate_filter_robustness(
+            candidate_filter, top_attack_prompts, benign_set, client, model_name
+        )
 
     # Keep the new rule when it improves attack refusal without substantially
     # increasing benign refusals, or when attack refusal is preserved and benign
     # false positives improve. In exact ties, avoid growing the filter.
-    accepted = (
+    accepted = False
+    rejection_reason = ""
+    if duplicate_rule:
+        rejection_reason = "duplicate_filter_rule"
+    elif (
         (new_attack > old_attack and new_benign <= old_benign + 0.05)
         or (new_attack >= old_attack and new_benign < old_benign)
-    )
+    ):
+        accepted = True
+    else:
+        rejection_reason = "no_refusal_improvement"
     if accepted:
         print(f">>> Filter updated with rule: {new_rule}")
         final_filter = candidate_filter
     else:
-        print(">>> Candidate filter rejected.")
+        print(f">>> Candidate filter rejected: {rejection_reason}")
         final_filter = current_filter
 
     report = FilterEvolutionReport(
@@ -284,6 +311,7 @@ def evolve_filter(
         accepted=bool(accepted),
         proposed_rule=new_rule,
         pattern_summary=pattern_summary,
+        rejection_reason=rejection_reason,
     )
 
     if return_report:

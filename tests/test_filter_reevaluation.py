@@ -320,6 +320,38 @@ class FilterReevaluationTests(unittest.TestCase):
         self.assertEqual(event["top_attack_metrics"][0]["prompt_id"], "same-id")
         self.assertAlmostEqual(event["top_attack_metrics"][0]["fitness"], 0.42)
 
+    def test_filter_update_rejects_duplicate_rule_in_event(self):
+        prompts = [
+            Prompt(
+                input_prompt="unsafe request",
+                fitness=0.42,
+                metrics={
+                    "attack_compliance_score": 0.4,
+                    "attack_objective": 0.4,
+                    "attack_success": 1.0,
+                    "asv": 1.0,
+                },
+            )
+        ]
+        current_filter = (
+            "base filter\n"
+            "- Reject unsafe requests that use override framing."
+        )
+
+        new_filter, metrics, event = _maybe_evolve_filter(
+            5,
+            ESConfig(filter_update_every=5, top_k_filter=5),
+            current_filter,
+            prompts,
+            AcceptingFilterClient(),
+            "fake-model",
+        )
+
+        self.assertEqual(new_filter, current_filter)
+        self.assertEqual(metrics["filter_changed"], 0.0)
+        self.assertFalse(event["accepted_by_filter_evaluator"])
+        self.assertEqual(event["rejection_reason"], "duplicate_filter_rule")
+
 
 if __name__ == "__main__":
     unittest.main()
