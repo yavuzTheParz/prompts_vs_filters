@@ -52,6 +52,32 @@ IMPERATIVE_FRAGMENTS = (
     ("this", "is", "mandatory"),
 )
 
+COMMON_FLUENCY_WORDS = {
+    "about", "access", "action", "afresh", "all", "also", "and", "answer", "are",
+    "assistant", "audit", "before", "benign", "can", "check", "clear", "compare",
+    "conservative", "context", "control", "could", "current", "decision", "describe",
+    "design", "detail", "document", "does", "during", "each", "engineer", "environment",
+    "explain", "focus", "follow", "for", "from", "future", "give", "had", "help",
+    "how", "ignore", "instead", "into", "let", "made", "maintainer", "me", "of",
+    "one", "operator", "please", "prior", "provide", "record", "recovery", "request",
+    "review", "safe", "safety", "schedule", "several", "so", "staging", "start",
+    "system", "team", "the", "their", "to", "tradeoff", "understand", "untrusted",
+    "unsafe", "verify", "why", "while", "with", "you",
+}
+
+DOMAIN_FLUENCY_SUBSTRINGS = (
+    "admin", "attack", "backdoor", "bypass", "credential", "cyber", "exploit",
+    "harm", "instruction", "malware", "policy", "procedure", "protocol", "security",
+    "shell", "system", "unix", "engineering",
+)
+
+COMMON_BIGRAMS = {
+    "an", "ar", "as", "at", "be", "ch", "ck", "co", "ct", "de", "ed", "en",
+    "er", "es", "he", "hi", "in", "io", "is", "it", "le", "ll", "me", "nd",
+    "ng", "nt", "on", "or", "ou", "ow", "pr", "re", "ri", "ro", "sa", "sc",
+    "se", "si", "st", "ta", "te", "th", "ti", "to", "tr", "un", "ve", "wa",
+}
+
 
 def imperative_fragment_count(text: str) -> int:
     tokens = normalized_tokens(text)
@@ -65,6 +91,28 @@ def imperative_fragment_count(text: str) -> int:
     return total
 
 
+def garbled_token_ratio(text: str) -> float:
+    tokens = [token for token in normalized_tokens(text) if len(token) >= 4]
+    if not tokens:
+        return 0.0
+
+    suspicious = 0
+    for token in tokens:
+        if token in COMMON_FLUENCY_WORDS:
+            continue
+        if any(marker in token for marker in DOMAIN_FLUENCY_SUBSTRINGS):
+            continue
+        bigrams = [token[index : index + 2] for index in range(len(token) - 1)]
+        rare_ratio = (
+            sum(1 for bigram in bigrams if bigram not in COMMON_BIGRAMS)
+            / max(1, len(bigrams))
+        )
+        vowel_ratio = sum(1 for char in token if char in "aeiou") / len(token)
+        if rare_ratio >= 0.35 or vowel_ratio < 0.20:
+            suspicious += 1
+    return suspicious / len(tokens)
+
+
 def fluency_score(text: str, phrase_ngram_size: int = 2) -> float:
     tokens = normalized_tokens(text)
     if not tokens:
@@ -75,10 +123,12 @@ def fluency_score(text: str, phrase_ngram_size: int = 2) -> float:
     unique_ratio = len(set(tokens)) / len(tokens)
     phrase_count = repeated_phrase_count(text, phrase_ngram_size)
     fragment_count = imperative_fragment_count(text)
+    garbled_ratio = garbled_token_ratio(text)
     score = 1.0
     score -= max(0.0, 0.65 - unique_ratio) * 1.25
     score -= min(0.60, max(0, phrase_count - 1) * 0.18)
     score -= min(0.35, max(0, fragment_count - 1) * 0.08)
+    score -= min(0.70, garbled_ratio * 0.90)
     if "[MASK]" in text:
         score -= 0.50
     if "  " in text:
@@ -147,6 +197,7 @@ def apply_quality_constraints(
                 "rendered_prompt_length": float(len(rendered)),
                 "repeated_phrase_count": float(phrase_count),
                 "imperative_fragment_count": float(fragment_count),
+                "garbled_token_ratio": float(garbled_token_ratio(rendered)),
             }
         )
 

@@ -32,9 +32,14 @@ def constraint_key(p: Prompt, mr_objective: str = BEHAVIORAL_DEVIATION):
     valid = _flt(metrics.get("valid", 1.0))
     compliance, mr_term, similarity = lexicographic_key(p, mr_objective)
     quality = (
-        -get_metric(p, "repetition_penalty")
+        get_metric(p, "fluency")
+        - get_metric(p, "quality_soft_penalty")
+        - get_metric(p, "garbled_token_ratio")
+        - get_metric(p, "repetition_penalty")
         - get_metric(p, "length_penalty")
-        + get_metric(p, "diversity")
+        - 0.05 * get_metric(p, "repeated_phrase_count")
+        - 0.03 * get_metric(p, "imperative_fragment_count")
+        + 0.05 * get_metric(p, "diversity")
     )
     return (valid, compliance, mr_term, quality, scalar_key(p), similarity)
 
@@ -156,7 +161,7 @@ def sort_population_rank_partitioning(
     except ModuleNotFoundError:
         return sorted(
             population,
-            key=lambda prompt: lexicographic_key(prompt, mr_objective=mr_objective),
+            key=lambda prompt: constraint_key(prompt, mr_objective),
             reverse=True,
         ), {"fallback": "lexicographic_without_numpy"}
 
@@ -200,7 +205,11 @@ def sort_population_rank_partitioning(
         p.metrics["mr_partition"] = float(row[gas["fitIdx"]["mrModified"]])
         ranked_population.append(p)
 
-    return ranked_population, dict(gas["ranking"])
+    return sorted(
+        ranked_population,
+        key=lambda prompt: constraint_key(prompt, mr_objective),
+        reverse=True,
+    ), dict(gas["ranking"])
 
 
 def sort_population(

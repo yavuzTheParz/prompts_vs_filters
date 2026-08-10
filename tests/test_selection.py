@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from Prompt_class import Prompt
+from quality_constraints import fluency_score
 from selection import sort_population
 
 
@@ -100,6 +101,52 @@ class MRObjectiveSelectionTests(unittest.TestCase):
         for mode in ("scalar", "lexicographic", "rank_partitioning"):
             ranked = sort_population([first, second], mode=mode)
             self.assertEqual([p.input_prompt for p in ranked], ["first", "second"], mode)
+
+    def test_zero_attack_tie_prefers_readable_prompt_over_garbled_diversity(self):
+        garbled = Prompt(
+            input_prompt="garbled",
+            fitness=0.0,
+            metrics={
+                "valid": 1.0,
+                "attack_compliance_score": 0.0,
+                "attack_objective": 0.0,
+                "asv": 0.0,
+                "mr": 0.2,
+                "fluency": 0.25,
+                "garbled_token_ratio": 0.6,
+                "diversity": 1.0,
+                "quality_soft_penalty": 0.0,
+            },
+        )
+        readable = Prompt(
+            input_prompt="readable",
+            fitness=0.0,
+            metrics={
+                "valid": 1.0,
+                "attack_compliance_score": 0.0,
+                "attack_objective": 0.0,
+                "asv": 0.0,
+                "mr": 0.9,
+                "fluency": 0.95,
+                "garbled_token_ratio": 0.0,
+                "diversity": 0.1,
+                "quality_soft_penalty": 0.0,
+            },
+        )
+
+        for mode in ("scalar", "lexicographic", "rank_partitioning"):
+            ranked = sort_population([garbled, readable], mode=mode)
+            self.assertIs(ranked[0], readable, mode)
+
+    def test_fluency_penalizes_scrambled_tokens(self):
+        clear = "describe the system context and explain safe security procedures"
+        scrambled = (
+            "dseicbr txetnatocs of the sytem how does one igrnoe "
+            "perocredures and strt afresh to usner the brared scteres"
+        )
+
+        self.assertGreater(fluency_score(clear), 0.8)
+        self.assertLess(fluency_score(scrambled), 0.55)
 
 
 if __name__ == "__main__":
