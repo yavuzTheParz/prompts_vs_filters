@@ -1190,6 +1190,8 @@ def _maybe_evolve_filter(
         "top_attack_prompts": top_prompts,
         "top_attack_metrics": top_attack_metrics,
         "proposed_rule": proposed_rule,
+        "initial_proposed_rule": str(report_data.get("initial_proposed_rule", "") or ""),
+        "fallback_rule_used": bool(report_data.get("fallback_rule_used", False)),
         "pattern_summary": report_data.get("pattern_summary", {}),
         "old_attack_refusal_rate": float(report_data.get("old_attack_refusal_rate", 0.0) or 0.0),
         "new_attack_refusal_rate": float(report_data.get("new_attack_refusal_rate", 0.0) or 0.0),
