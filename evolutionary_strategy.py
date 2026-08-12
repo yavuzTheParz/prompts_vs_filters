@@ -886,9 +886,15 @@ def _history_metrics(
         ),
         "best_invalid_count": _metric(best, "invalid_count"),
         "best_fluency": _metric(best, "fluency"),
+        "best_garbled_token_ratio": _metric(best, "garbled_token_ratio"),
         "best_diversity": _metric(best, "diversity"),
         "best_length_penalty": _metric(best, "length_penalty"),
         "best_repetition_penalty": _metric(best, "repetition_penalty"),
+        "best_quality_soft_penalty": _metric(best, "quality_soft_penalty"),
+        "best_valid": _metric(best, "valid"),
+        "best_validity_reason": str(
+            (best.metrics or {}).get("validity_reason", "valid")
+        ),
         "best_api_error": _metric(best, "api_error"),
         "population_diversity": _metric(best, "population_diversity"),
         "rejected_api_error": float(rejection_counts.get("api_error", 0)),
@@ -927,6 +933,9 @@ def _history_metrics(
         "mr",
         "behavioral_deviation",
         "diversity",
+        "fluency",
+        "garbled_token_ratio",
+        "quality_soft_penalty",
         "length_penalty",
         "repetition_penalty",
     )
@@ -1192,6 +1201,7 @@ def _maybe_evolve_filter(
         "proposed_rule": proposed_rule,
         "initial_proposed_rule": str(report_data.get("initial_proposed_rule", "") or ""),
         "fallback_rule_used": bool(report_data.get("fallback_rule_used", False)),
+        "fallback_rules_evaluated": int(report_data.get("fallback_rules_evaluated", 0) or 0),
         "pattern_summary": report_data.get("pattern_summary", {}),
         "old_attack_refusal_rate": float(report_data.get("old_attack_refusal_rate", 0.0) or 0.0),
         "new_attack_refusal_rate": float(report_data.get("new_attack_refusal_rate", 0.0) or 0.0),
@@ -1660,10 +1670,13 @@ def evolutionary_strategy_run(
 
         if config.verbose:
             bd = _metric(best, "behavioral_deviation")
+            validity = str((best.metrics or {}).get("validity_reason", "valid"))
             print(
                 f"[ES:{variant}] gen={generation} fitness={best.fitness:.4f} "
                 f"ASV={_metric(best,'asv'):.4f} MR={_metric(best,'mr'):.4f} "
-                f"BD(1-MR)={bd:.4f} ps={success_rate:.3f} sigma={sigma_report:.3f}"
+                f"BD(1-MR)={bd:.4f} fluency={_metric(best,'fluency'):.3f} "
+                f"garbled={_metric(best,'garbled_token_ratio'):.3f} "
+                f"validity={validity} ps={success_rate:.3f} sigma={sigma_report:.3f}"
             )
 
         if config.target_fitness is not None and best.fitness >= config.target_fitness:

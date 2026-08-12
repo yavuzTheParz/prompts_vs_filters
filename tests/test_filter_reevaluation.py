@@ -399,6 +399,7 @@ class FilterReevaluationTests(unittest.TestCase):
         self.assertNotEqual(new_filter, current_filter)
         self.assertEqual(metrics["filter_changed"], 1.0)
         self.assertTrue(event["fallback_rule_used"])
+        self.assertEqual(event["fallback_rules_evaluated"], 1)
         self.assertEqual(
             event["initial_proposed_rule"],
             PATTERN_FALLBACK_RULES["override_or_ignore_instruction"],
