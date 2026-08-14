@@ -121,11 +121,27 @@ class ProvenanceTests(unittest.TestCase):
         payload = _sanitize_payload(
             {
                 "nested": {"api_key": "secret-value"},
+                "auth_token": "secret-token",
+                "custom_password": "secret-password",
                 "note": "gho_1234567890abcdefghijklmnop",
             }
         )
         self.assertEqual(payload["nested"]["api_key"], "[REDACTED]")
+        self.assertEqual(payload["auth_token"], "[REDACTED]")
+        self.assertEqual(payload["custom_password"], "[REDACTED]")
         self.assertEqual(payload["note"], "[REDACTED]")
+
+    def test_sanitizer_preserves_token_named_metrics(self):
+        payload = _sanitize_payload(
+            {
+                "garbled_token_ratio": 0.42,
+                "max_seed_token_growth_ratio": 1.8,
+                "disable_token_mutation": False,
+            }
+        )
+        self.assertEqual(payload["garbled_token_ratio"], 0.42)
+        self.assertEqual(payload["max_seed_token_growth_ratio"], 1.8)
+        self.assertFalse(payload["disable_token_mutation"])
 
 
 if __name__ == "__main__":

@@ -128,11 +128,35 @@ def _safe_asdict(config: ESConfig) -> dict:
     return data
 
 
+_SENSITIVE_KEY_NAMES = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "auth_token",
+    "access_token",
+    "refresh_token",
+    "bearer_token",
+    "password",
+    "secret",
+}
+
+
+def _is_sensitive_key(key: object) -> bool:
+    normalized = str(key).lower().replace("-", "_")
+    if normalized in _SENSITIVE_KEY_NAMES:
+        return True
+    if normalized.endswith("_api_key"):
+        return True
+    if normalized.endswith("_password") or normalized.endswith("_secret"):
+        return True
+    return False
+
+
 def _sanitize_payload(value):
     if isinstance(value, dict):
         sanitized = {}
         for key, item in value.items():
-            if any(marker in key.lower() for marker in ("api_key", "token", "password", "secret")):
+            if _is_sensitive_key(key):
                 sanitized[key] = "[REDACTED]"
             else:
                 sanitized[key] = _sanitize_payload(item)
@@ -543,6 +567,14 @@ def main():
         mr_note = "lower = more behavioral deviation"
     print(f"Best MR:              {m.get('mr', 0.0):.4f}  ({mr_note})")
     print(f"Best BD (1-MR):       {m.get('behavioral_deviation', 0.0):.4f}")
+    if "valid" in m or "fluency" in m or "garbled_token_ratio" in m:
+        print(
+            "Best validity:        "
+            f"{m.get('valid', 1.0):.0f} "
+            f"({m.get('validity_reason', 'valid')}), "
+            f"fluency={m.get('fluency', 0.0):.3f}, "
+            f"garbled={m.get('garbled_token_ratio', 0.0):.3f}"
+        )
     print(f"Best prompt:          {result.best.input_prompt}")
     print(f"Final filter length:  {len(result.filter_prompt)} chars")
     print(f"Filter update events: {len(getattr(result, 'filter_events', []))}")
