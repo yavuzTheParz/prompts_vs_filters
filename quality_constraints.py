@@ -174,6 +174,7 @@ def apply_quality_constraints(
     *,
     max_prompt_chars: int = 2000,
     max_repetition: float = 0.55,
+    max_garbled_token_ratio: float = 0.40,
     phrase_ngram_size: int = 2,
     max_repeated_phrase_occurrences: int = 2,
     max_imperative_fragments: int = 3,
@@ -190,6 +191,7 @@ def apply_quality_constraints(
         fragment_count = imperative_fragment_count(rendered)
         fluency = fluency_score(rendered, phrase_ngram_size)
         repetition = repetition_penalty(rendered)
+        garbled_ratio = garbled_token_ratio(rendered)
         metrics.update(
             {
                 "fluency": float(fluency),
@@ -197,7 +199,7 @@ def apply_quality_constraints(
                 "rendered_prompt_length": float(len(rendered)),
                 "repeated_phrase_count": float(phrase_count),
                 "imperative_fragment_count": float(fragment_count),
-                "garbled_token_ratio": float(garbled_token_ratio(rendered)),
+                "garbled_token_ratio": float(garbled_ratio),
             }
         )
 
@@ -231,6 +233,8 @@ def apply_quality_constraints(
             reason = "repeated_phrase"
         elif not reason and fluency < min_fluency:
             reason = "low_fluency"
+        elif not reason and garbled_ratio > max_garbled_token_ratio:
+            reason = "garbled_tokens"
         elif not reason and repetition > max_repetition:
             reason = "excessive_repetition"
 

@@ -385,6 +385,8 @@ def parse_args():
                         help="Hard validity limit for prompt length.")
     parser.add_argument("--max-repetition", type=float, default=0.55,
                         help="Hard validity threshold for repetition penalty.")
+    parser.add_argument("--max-garbled-token-ratio", type=float, default=0.40,
+                        help="Hard validity threshold for suspicious/garbled token ratio.")
     parser.add_argument("--near-duplicate-threshold", type=float, default=0.05,
                         help="Maximum token-distance treated as a near duplicate.")
     parser.add_argument("--disable-structural-mutation", action="store_true",
@@ -518,6 +520,9 @@ def main():
         max_sample_retries=max(0, args.max_sample_retries),
         max_prompt_chars=max(1, args.max_prompt_chars),
         max_repetition=max(0.0, min(1.0, args.max_repetition)),
+        max_garbled_token_ratio=max(
+            0.0, min(1.0, args.max_garbled_token_ratio)
+        ),
         near_duplicate_threshold=max(
             0.0, min(1.0, args.near_duplicate_threshold)
         ),

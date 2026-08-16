@@ -242,6 +242,7 @@ def _filter_has_rule(current_filter: str, proposed_rule: str) -> bool:
 def _pattern_fallback_candidates(
     pattern_summary: Dict[str, Union[int, List[str]]],
     current_filter: str,
+    exclude_rules: Sequence[str] = (),
 ) -> List[str]:
     active_patterns = pattern_summary.get("active_patterns", [])
     if not isinstance(active_patterns, list):
@@ -259,8 +260,16 @@ def _pattern_fallback_candidates(
         if pattern not in ordered_patterns
     )
     candidates = []
+    excluded = {
+        _normalize_rule_for_dedupe(rule)
+        for rule in exclude_rules
+        if _normalize_rule_for_dedupe(rule)
+    }
     for pattern in ordered_patterns:
         rule = PATTERN_FALLBACK_RULES[pattern]
+        normalized_rule = _normalize_rule_for_dedupe(rule)
+        if normalized_rule in excluded:
+            continue
         if not _filter_has_rule(current_filter, rule):
             candidates.append(rule)
     return candidates
@@ -373,13 +382,16 @@ def evolve_filter(
 
     fallback_rules_evaluated = 0
     candidate_rules: List[Tuple[str, bool]] = []
-    if _filter_has_rule(current_filter, new_rule):
-        candidate_rules.extend(
-            (rule, True)
-            for rule in _pattern_fallback_candidates(pattern_summary, current_filter)
-        )
-    else:
+    if not _filter_has_rule(current_filter, new_rule):
         candidate_rules.append((new_rule, False))
+    candidate_rules.extend(
+        (rule, True)
+        for rule in _pattern_fallback_candidates(
+            pattern_summary,
+            current_filter,
+            exclude_rules=[new_rule],
+        )
+    )
 
     selected_rule = ""
     selected_fallback = False

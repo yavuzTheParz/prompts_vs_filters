@@ -77,6 +77,7 @@ class ESConfig:
     max_sample_retries: int = 2
     max_prompt_chars: int = 2000
     max_repetition: float = 0.55
+    max_garbled_token_ratio: float = 0.40
     near_duplicate_threshold: float = 0.05
 
     style_selection: str = "random"
@@ -755,6 +756,9 @@ def _evaluate_population(
         population,
         max_prompt_chars=config.max_prompt_chars if config else 2000,
         max_repetition=config.max_repetition if config else 0.55,
+        max_garbled_token_ratio=(
+            config.max_garbled_token_ratio if config else 0.40
+        ),
         phrase_ngram_size=config.phrase_ngram_size if config else 2,
         max_repeated_phrase_occurrences=(
             config.max_repeated_phrase_occurrences if config else 2
@@ -1303,6 +1307,9 @@ def evolutionary_strategy_run(
     )
     config.min_fluency = max(
         0.0, min(1.0, float(config.min_fluency))
+    )
+    config.max_garbled_token_ratio = max(
+        0.0, min(1.0, float(config.max_garbled_token_ratio))
     )
     config.mr_objective = normalize_mr_objective(config.mr_objective)
 
