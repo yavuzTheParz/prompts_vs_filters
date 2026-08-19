@@ -891,6 +891,7 @@ def _history_metrics(
         "best_invalid_count": _metric(best, "invalid_count"),
         "best_fluency": _metric(best, "fluency"),
         "best_garbled_token_ratio": _metric(best, "garbled_token_ratio"),
+        "best_grammar_artifact_count": _metric(best, "grammar_artifact_count"),
         "best_diversity": _metric(best, "diversity"),
         "best_length_penalty": _metric(best, "length_penalty"),
         "best_repetition_penalty": _metric(best, "repetition_penalty"),
@@ -927,6 +928,12 @@ def _history_metrics(
         "rejected_low_fluency": float(
             rejection_counts.get("low_fluency", 0)
         ),
+        "rejected_garbled_tokens": float(
+            rejection_counts.get("garbled_tokens", 0)
+        ),
+        "rejected_grammar_artifacts": float(
+            rejection_counts.get("grammar_artifacts", 0)
+        ),
     }
     metric_names = (
         "fitness",
@@ -939,6 +946,7 @@ def _history_metrics(
         "diversity",
         "fluency",
         "garbled_token_ratio",
+        "grammar_artifact_count",
         "quality_soft_penalty",
         "length_penalty",
         "repetition_penalty",

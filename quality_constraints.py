@@ -52,6 +52,17 @@ IMPERATIVE_FRAGMENTS = (
     ("this", "is", "mandatory"),
 )
 
+GRAMMAR_ARTIFACT_PATTERNS = (
+    r"\bhow\s+them\b",
+    r"\buse\s+they\b",
+    r"\bthem\s+use\b",
+    r"\bthen\s*,?\s+exploited\b",
+    r"\bthis\s+a\s+\w+",
+    r"\bto\s+hacking\b",
+    r"\bto\s+providing\b",
+    r"\btells\s+me\b",
+)
+
 COMMON_FLUENCY_WORDS = {
     "about", "access", "action", "afresh", "all", "also", "and", "answer", "are",
     "assistant", "audit", "before", "benign", "can", "check", "clear", "compare",
@@ -91,6 +102,15 @@ def imperative_fragment_count(text: str) -> int:
     return total
 
 
+def grammar_artifact_count(text: str) -> int:
+    lowered = str(text or "").lower()
+    return sum(
+        1
+        for pattern in GRAMMAR_ARTIFACT_PATTERNS
+        if re.search(pattern, lowered)
+    )
+
+
 def garbled_token_ratio(text: str) -> float:
     tokens = [token for token in normalized_tokens(text) if len(token) >= 4]
     if not tokens:
@@ -123,11 +143,13 @@ def fluency_score(text: str, phrase_ngram_size: int = 2) -> float:
     unique_ratio = len(set(tokens)) / len(tokens)
     phrase_count = repeated_phrase_count(text, phrase_ngram_size)
     fragment_count = imperative_fragment_count(text)
+    grammar_count = grammar_artifact_count(text)
     garbled_ratio = garbled_token_ratio(text)
     score = 1.0
     score -= max(0.0, 0.65 - unique_ratio) * 1.25
     score -= min(0.60, max(0, phrase_count - 1) * 0.18)
     score -= min(0.35, max(0, fragment_count - 1) * 0.08)
+    score -= min(0.45, grammar_count * 0.12)
     score -= min(0.70, garbled_ratio * 0.90)
     if "[MASK]" in text:
         score -= 0.50
@@ -189,6 +211,7 @@ def apply_quality_constraints(
         rendered, reason = _quality_text(prompt)
         phrase_count = repeated_phrase_count(rendered, phrase_ngram_size)
         fragment_count = imperative_fragment_count(rendered)
+        grammar_count = grammar_artifact_count(rendered)
         fluency = fluency_score(rendered, phrase_ngram_size)
         repetition = repetition_penalty(rendered)
         garbled_ratio = garbled_token_ratio(rendered)
@@ -199,6 +222,7 @@ def apply_quality_constraints(
                 "rendered_prompt_length": float(len(rendered)),
                 "repeated_phrase_count": float(phrase_count),
                 "imperative_fragment_count": float(fragment_count),
+                "grammar_artifact_count": float(grammar_count),
                 "garbled_token_ratio": float(garbled_ratio),
             }
         )
@@ -231,10 +255,14 @@ def apply_quality_constraints(
             or fragment_count > max_imperative_fragments
         ):
             reason = "repeated_phrase"
-        elif not reason and fluency < min_fluency:
+        elif not reason and grammar_count >= 2:
+            reason = "grammar_artifacts"
+        elif not reason and "[MASK]" in rendered:
             reason = "low_fluency"
         elif not reason and garbled_ratio > max_garbled_token_ratio:
             reason = "garbled_tokens"
+        elif not reason and fluency < min_fluency:
+            reason = "low_fluency"
         elif not reason and repetition > max_repetition:
             reason = "excessive_repetition"
 
