@@ -48,7 +48,7 @@ class MRObjectiveSelectionTests(unittest.TestCase):
         self.assertIs(deviation_order[0], self.lower_mr)
         self.assertIs(recovery_order[0], self.higher_mr)
 
-    def test_compliance_ranks_above_high_similarity_ambiguous(self):
+    def test_scalar_and_lexicographic_choose_different_winners(self):
         ambiguous = Prompt(
             input_prompt="ambiguous",
             fitness=0.9,
@@ -72,9 +72,27 @@ class MRObjectiveSelectionTests(unittest.TestCase):
             },
         )
 
-        for mode in ("scalar", "lexicographic", "rank_partitioning"):
-            ranked = sort_population([ambiguous, compliant], mode=mode)
-            self.assertIs(ranked[0], compliant, mode)
+        scalar = sort_population([ambiguous, compliant], mode="scalar")
+        lexicographic = sort_population([ambiguous, compliant], mode="lexicographic")
+        partitioned = sort_population([ambiguous, compliant], mode="rank_partitioning")
+
+        self.assertIs(scalar[0], ambiguous)
+        self.assertIs(lexicographic[0], compliant)
+        self.assertIs(partitioned[0], compliant)
+
+    def test_validity_is_hard_constraint_in_both_modes(self):
+        invalid = Prompt(
+            input_prompt="invalid high scores",
+            fitness=1.0,
+            metrics={"valid": 0.0, "attack_compliance_score": 1.0, "mr": 0.0},
+        )
+        valid = Prompt(
+            input_prompt="valid lower scores",
+            fitness=0.1,
+            metrics={"valid": 1.0, "attack_compliance_score": 0.1, "mr": 0.9},
+        )
+        for mode in ("scalar", "lexicographic"):
+            self.assertIs(sort_population([invalid, valid], mode=mode)[0], valid)
 
     def test_zero_attack_score_does_not_rank_by_mr(self):
         first = Prompt(

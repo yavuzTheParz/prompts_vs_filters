@@ -27,10 +27,14 @@ def scalar_key(p: Prompt) -> float:
     return _flt(getattr(p, "fitness", 0.0))
 
 
-def constraint_key(p: Prompt, mr_objective: str = BEHAVIORAL_DEVIATION):
+def validity_key(p: Prompt) -> float:
     metrics = getattr(p, "metrics", {}) or {}
-    valid = _flt(metrics.get("valid", 1.0))
-    compliance, mr_term, similarity = lexicographic_key(p, mr_objective)
+    if _flt(metrics.get("evaluator_invalid", 0.0)) > 0.0:
+        return 0.0
+    return 1.0 if _flt(metrics.get("valid", 1.0)) > 0.0 else 0.0
+
+
+def quality_key(p: Prompt) -> Tuple[float, float, float]:
     quality = (
         get_metric(p, "fluency")
         - get_metric(p, "quality_soft_penalty")
@@ -39,9 +43,39 @@ def constraint_key(p: Prompt, mr_objective: str = BEHAVIORAL_DEVIATION):
         - get_metric(p, "length_penalty")
         - 0.05 * get_metric(p, "repeated_phrase_count")
         - 0.03 * get_metric(p, "imperative_fragment_count")
-        + 0.05 * get_metric(p, "diversity")
     )
-    return (valid, compliance, mr_term, quality, scalar_key(p), similarity)
+    return (quality, get_metric(p, "diversity"), get_metric(p, "unsafe_reference_similarity"))
+
+
+def constraint_key(p: Prompt, mr_objective: str = BEHAVIORAL_DEVIATION):
+    valid = validity_key(p)
+    compliance, mr_term, similarity = lexicographic_key(p, mr_objective)
+    quality, diversity, _ = quality_key(p)
+    return (valid, compliance, mr_term, quality, diversity, scalar_key(p), similarity)
+
+
+def selection_key(
+    p: Prompt,
+    mode: str = "scalar",
+    mr_objective: str = BEHAVIORAL_DEVIATION,
+):
+    mode = (mode or "scalar").strip().lower()
+    valid = validity_key(p)
+    quality, diversity, similarity = quality_key(p)
+    if mode == "scalar":
+        return (valid, scalar_key(p), quality, diversity, similarity)
+    if mode == "lexicographic":
+        compliance, mr_term, similarity = lexicographic_key(p, mr_objective)
+        return (
+            valid,
+            compliance,
+            mr_term,
+            quality,
+            diversity,
+            scalar_key(p),
+            similarity,
+        )
+    raise ValueError("selection mode must be 'scalar' or 'lexicographic'")
 
 
 def lexicographic_key(
@@ -223,13 +257,13 @@ def sort_population(
     if mode == "scalar":
         return sorted(
             list(population),
-            key=lambda prompt: constraint_key(prompt, mr_objective),
+            key=lambda prompt: selection_key(prompt, "scalar", mr_objective),
             reverse=True,
         )
     if mode == "lexicographic":
         return sorted(
             list(population),
-            key=lambda prompt: constraint_key(prompt, mr_objective),
+            key=lambda prompt: selection_key(prompt, "lexicographic", mr_objective),
             reverse=True,
         )
     if mode in {"rank_partitioning", "partitioning", "rank"}:
