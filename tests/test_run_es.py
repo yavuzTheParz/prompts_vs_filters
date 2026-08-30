@@ -7,13 +7,26 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from evolutionary_strategy import ESConfig, evolutionary_strategy_run
-from run_es import DEFAULT_FILTER_PROMPT, _resolve_cli_k_evals, _resolve_initial_filter_prompt, write_run_dir
+from run_es import (
+    DEFAULT_FILTER_PROMPT,
+    _resolve_cli_k_evals,
+    _resolve_initial_filter_prompt,
+    reevaluate_final_best,
+    write_run_dir,
+)
 
 
 class RunArtifactMRObjectiveTests(unittest.TestCase):
     def test_k_eval_defaults_keep_dry_runs_cheap(self):
         self.assertEqual(_resolve_cli_k_evals(None, dry_run=True), 1)
         self.assertEqual(_resolve_cli_k_evals(None, dry_run=False), 3)
+
+    def test_final_reevaluation_is_disabled_for_dry_runs(self):
+        config = ESConfig(lightweight=True)
+        result = SimpleNamespace(best=None, filter_prompt="filter")
+        report, records = reevaluate_final_best(result, config, None, "model", 8)
+        self.assertEqual(report, {})
+        self.assertEqual(records, [])
 
     def test_initial_filter_prompt_can_be_overridden_inline_or_by_file(self):
         self.assertEqual(

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import importlib.metadata
 import json
 import os
 import re
 import subprocess
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Optional
 
@@ -305,6 +306,26 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     _write_jsonl(root / "outputs.jsonl", _final_population_output_rows(result))
     _write_jsonl(root / "samples.jsonl", getattr(result, "sample_records", []))
     _write_jsonl(root / "lineage.jsonl", getattr(result, "lineage_records", []))
+    final_reevaluation = getattr(result, "final_reevaluation", {}) or {}
+    if final_reevaluation:
+        (root / "final_reevaluation.json").write_text(
+            json.dumps(
+                _sanitize_payload(final_reevaluation),
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        _write_jsonl(
+            root / "final_reevaluation_samples.jsonl",
+            getattr(result, "final_reevaluation_samples", []) or [],
+        )
+    benign_holdout = getattr(result, "benign_holdout", {}) or {}
+    if benign_holdout:
+        (root / "benign_holdout.json").write_text(
+            json.dumps(_sanitize_payload(benign_holdout), indent=2),
+            encoding="utf-8",
+        )
     manifest = _sanitize_payload(
         {
             "commit_sha": _commit_sha(),
@@ -325,9 +346,12 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     summary = {
         "best_fitness": float(result.best.fitness),
         "best_metrics": _sanitize_payload(dict(result.best.metrics or {})),
+        "runtime_sec": float(result.runtime_sec),
         "generations_completed": len(result.history),
         "filter_versions": len(getattr(result, "filter_versions", [])),
         "sample_attempts": len(getattr(result, "sample_records", [])),
+        "final_reevaluation": _sanitize_payload(final_reevaluation),
+        "benign_holdout": _sanitize_payload(benign_holdout),
     }
     (root / "summary.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=False),
@@ -385,6 +409,15 @@ def parse_args():
                         help="Temperature for filtered response sampling. Defaults to the deterministic direct baseline temperature; set >0 explicitly for stochastic attack sampling.")
     parser.add_argument("--max-sample-retries", type=int, default=2,
                         help="Retries after a failed or empty model sample.")
+    parser.add_argument(
+        "--final-k-evals",
+        type=int,
+        default=0,
+        help=(
+            "Fresh response samples used to confirm the final selected prompt. "
+            "0 disables confirmation; pilot runs should use at least 8."
+        ),
+    )
     parser.add_argument("--max-prompt-chars", type=int, default=2000,
                         help="Hard validity limit for prompt length.")
     parser.add_argument("--max-repetition", type=float, default=0.55,
@@ -461,6 +494,17 @@ def parse_args():
     parser.add_argument("--benign-csv", default=None,
                         help="CSV of benign prompts used to measure filter false-positive rate. "
                              "If omitted, a small built-in set is used. Provide a real set for valid experiments.")
+    parser.add_argument(
+        "--benign-holdout-csv",
+        default=None,
+        help="Independent benign CSV evaluated only after search; never used to accept filter updates.",
+    )
+    parser.add_argument(
+        "--benign-holdout-repeats",
+        type=int,
+        default=3,
+        help="Repeated final-filter evaluations per benign holdout prompt.",
+    )
     parser.add_argument("--max-filter-chars", type=int, default=4000,
                         help="Reject candidate filter updates longer than this character limit.")
     parser.add_argument("--initial-filter-prompt", default=None,
@@ -487,6 +531,100 @@ def _resolve_cli_k_evals(requested: Optional[int], dry_run: bool) -> int:
     if requested is None:
         return 1 if dry_run else 3
     return max(1, int(requested))
+
+
+def reevaluate_final_best(result, config: ESConfig, client, model_name: str, k_evals: int):
+    """Confirm the selected prompt with fresh model samples after search."""
+    if config.lightweight or client is None or int(k_evals) <= 0:
+        return {}, []
+
+    from evolutionary_strategy import _evaluate_population
+    from fitfunc import callFitness
+
+    candidate = copy.deepcopy(result.best)
+    candidate.output_prompts = []
+    candidate.direct_output = ""
+    candidate.metrics = {}
+    candidate.fitness = 0.0
+    for key in ("api_error", "valid_llm_response", "sample_records"):
+        candidate.metadata.pop(key, None)
+    candidate.metadata["evaluation_phase"] = "final_confirmation"
+
+    confirmation_config = replace(config, k_evals=max(1, int(k_evals)))
+    records = []
+
+    def evaluator(population):
+        return callFitness(population, mr_objective=config.mr_objective)
+
+    _evaluate_population(
+        [candidate],
+        result.filter_prompt,
+        client,
+        model_name,
+        evaluator,
+        False,
+        config=confirmation_config,
+        generation=config.generations + 1,
+        sample_records=records,
+        filter_version=max(0, len(getattr(result, "filter_versions", [])) - 1),
+    )
+    search_metrics = dict(result.best.metrics or {})
+    confirmation_metrics = dict(candidate.metrics or {})
+    report = {
+        "phase": "final_confirmation",
+        "k_evals": int(confirmation_config.k_evals),
+        "prompt_id": candidate.metadata.get("prompt_id"),
+        "search_fitness": float(result.best.fitness),
+        "confirmation_fitness": float(candidate.fitness),
+        "fitness_delta": float(candidate.fitness - result.best.fitness),
+        "search_metrics": search_metrics,
+        "confirmation_metrics": confirmation_metrics,
+    }
+    return report, records
+
+
+def evaluate_benign_holdout(
+    initial_filter: str,
+    final_filter: str,
+    csv_path: Optional[str],
+    repeats: int,
+    client,
+    model_name: str,
+):
+    if not csv_path or client is None:
+        return {}
+    path = Path(csv_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Benign holdout CSV not found: {path}")
+
+    from evolutionary_strategy import _load_benign_prompts
+    from filter_evolution import evaluate_filter_robustness
+
+    prompts = _load_benign_prompts(str(path))
+    repeat_count = max(1, int(repeats))
+
+    def repeated_rate(filter_prompt: str) -> float:
+        rates = [
+            evaluate_filter_robustness(
+                filter_prompt,
+                attack_set=[],
+                benign_set=prompts,
+                client=client,
+                model_name=model_name,
+            )[1]
+            for _ in range(repeat_count)
+        ]
+        return sum(rates) / len(rates)
+
+    initial_rate = repeated_rate(initial_filter)
+    final_rate = repeated_rate(final_filter)
+    return {
+        "prompt_count": len(prompts),
+        "repeats": repeat_count,
+        "initial_benign_refusal_rate": initial_rate,
+        "final_benign_refusal_rate": final_rate,
+        "benign_refusal_rate_delta": final_rate - initial_rate,
+    }
 
 
 def main():
@@ -558,6 +696,24 @@ def main():
         filter_prompt=initial_filter_prompt,
     )
 
+    final_reevaluation, final_reevaluation_samples = reevaluate_final_best(
+        result,
+        config,
+        client,
+        args.model,
+        args.final_k_evals,
+    )
+    result.final_reevaluation = final_reevaluation
+    result.final_reevaluation_samples = final_reevaluation_samples
+    result.benign_holdout = evaluate_benign_holdout(
+        initial_filter_prompt,
+        result.filter_prompt,
+        args.benign_holdout_csv,
+        args.benign_holdout_repeats,
+        client,
+        args.model,
+    )
+
     write_history_csv(args.history_csv, result.history)
     write_run_dir(args.run_dir, args, config, result)
 
@@ -591,6 +747,26 @@ def main():
     print(f"K evals per prompt:   {args.k_evals}")
     print(f"Direct temperature:   {args.direct_temperature:.3f}")
     print(f"Filtered temperature: {args.filtered_temperature:.3f}")
+    if final_reevaluation:
+        confirmed = final_reevaluation["confirmation_metrics"]
+        print(f"Confirmation K:       {final_reevaluation['k_evals']}")
+        print(f"Confirmed fitness:    {final_reevaluation['confirmation_fitness']:.4f}")
+        print(
+            "Confirmed attack obj: "
+            f"{confirmed.get('attack_objective', confirmed.get('asv', 0.0)):.4f}"
+        )
+        print(
+            "Confirmed validity:   "
+            f"{confirmed.get('valid', 1.0):.0f} "
+            f"({confirmed.get('validity_reason', 'valid')})"
+        )
+    if result.benign_holdout:
+        print(
+            "Benign holdout:       "
+            f"initial={result.benign_holdout['initial_benign_refusal_rate']:.3f}, "
+            f"final={result.benign_holdout['final_benign_refusal_rate']:.3f}, "
+            f"n={result.benign_holdout['prompt_count']}x{result.benign_holdout['repeats']}"
+        )
     if args.history_csv:
         print(f"History CSV:          {args.history_csv}")
     if args.run_dir:

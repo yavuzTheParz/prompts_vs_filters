@@ -358,6 +358,40 @@ and reference-similarity proxies must not be interpreted as genuine search
 improvement; prompt length, MR, and diversity are reported alongside them to
 expose metric artifacts and mode collapse.
 
+### Real-model pilot replications
+
+`experiments/run_pilot.py` runs paired fixed-filter and coevolution conditions
+against the real local model. Each seed receives the same condition budget;
+`--repeats 2` repeats an identical seed to measure model/sampling variability,
+while multiple distinct seeds measure search-path variability. Completed runs
+are skipped when the command is restarted. Incomplete existing run directories
+are reported rather than overwritten.
+
+The pilot runner also requests fresh final-confirmation samples after search.
+These samples are stored separately in `final_reevaluation.json` and
+`final_reevaluation_samples.jsonl`, preventing a noisy two-sample search winner
+from being reported as confirmed evidence.
+`pilot_paired_effects.csv` reports paired `coevolution - fixed_filter`
+differences with a small-sample 95% confidence interval and paired Cohen's dz;
+negative fitness and attack-objective differences favor the adaptive filter.
+The versioned benign calibration set is used during filter updates; a separate
+holdout set is evaluated only after search and records the initial-to-final
+benign refusal-rate change in `benign_holdout.json`.
+
+```powershell
+python -B experiments\run_pilot.py `
+  --base-url http://127.0.0.1:8000 `
+  --model dolphin `
+  --modes fixed_filter,coevolution `
+  --seeds 101,202,303 `
+  --generations 120 `
+  --mu 8 `
+  --lambda 16 `
+  --k-evals 2 `
+  --final-k-evals 8 `
+  --output-dir outputs\pilot_dolphin_g120
+```
+
 ## Output
 
 `run_es.py` prints the final best prompt and writes convergence/history data to:
