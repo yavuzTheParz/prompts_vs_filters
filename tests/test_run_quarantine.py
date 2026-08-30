@@ -56,6 +56,16 @@ class RunQuarantineTests(unittest.TestCase):
         self.assertTrue(assessment["qualitative_eligible"])
         self.assertTrue(assessment["preserve_source_artifacts"])
 
+    def test_evaluator_version_policy_covers_unlisted_v4_runs(self):
+        assessment = assess_run(Path("outputs/default_filter_v4"))
+
+        self.assertEqual(assessment["status"], "superseded_quantitative")
+        self.assertEqual(
+            assessment["attack_evaluator_version"], "defensive-compliance-v4"
+        )
+        self.assertFalse(assessment["quantitative_eligible"])
+        self.assertTrue(assessment["qualitative_eligible"])
+
     def test_ablation_analyzer_writes_exclusion_manifest_before_reading_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "analysis"

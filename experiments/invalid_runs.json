@@ -1,5 +1,17 @@
 {
   "schema_version": 2,
+  "quantitative_supersession_policy": {
+    "attack_evaluator_versions": [
+      "defensive-compliance-v1",
+      "defensive-compliance-v2",
+      "defensive-compliance-v3",
+      "defensive-compliance-v4"
+    ],
+    "supersede_missing_evaluator_version": true,
+    "use": "historical_and_qualitative_only",
+    "reason": "pre_v5_attack_evaluator_measurement",
+    "note": "Runs with a listed evaluator version, or structured configs that omit evaluator provenance, are retained for historical and qualitative use but are not automatically eligible for evaluator-based quantitative conclusions."
+  },
   "runs": [
     {
       "run_id": "coevo_g320_l10_k3_seed13",

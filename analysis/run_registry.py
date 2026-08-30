@@ -67,6 +67,39 @@ def assess_run(
                 ),
                 "registry": str(registry_path),
             }
+    policy = registry.get("quantitative_supersession_policy", {})
+    config_path = requested / "config.json"
+    if config_path.is_file() and policy:
+        try:
+            config_payload = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            config_payload = {}
+        evaluator_version = str(
+            (config_payload.get("attack_evaluator") or {}).get("version", "")
+        ).strip()
+        superseded_versions = set(policy.get("attack_evaluator_versions", []))
+        missing_is_superseded = bool(
+            policy.get("supersede_missing_evaluator_version", False)
+        )
+        if evaluator_version in superseded_versions or (
+            not evaluator_version and missing_is_superseded
+        ):
+            return {
+                "run_id": requested.name,
+                "path": str(run_dir),
+                "status": "superseded_quantitative",
+                "eligible": False,
+                "quantitative_eligible": False,
+                "qualitative_eligible": True,
+                "use": policy.get("use", "historical_and_qualitative_only"),
+                "exclusion_reasons": [
+                    policy.get("reason", "pre_fix_attack_evaluator")
+                ],
+                "note": policy.get("note", ""),
+                "preserve_source_artifacts": True,
+                "attack_evaluator_version": evaluator_version or "unrecorded",
+                "registry": str(registry_path),
+            }
     return {
         "run_id": requested.name,
         "path": str(run_dir),
