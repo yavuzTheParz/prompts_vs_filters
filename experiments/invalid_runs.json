@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "runs": [
     {
       "run_id": "coevo_g320_l10_k3_seed13",
@@ -23,6 +23,40 @@
         "summary.json": "d052b13482a3e0830ed3e059da85ba841e773762e48fb1ab860d879e6ed413b1",
         "generation_summary.csv": "78f44ef3efb616814a67f6e4a18d607cfc3a8bcab03d8c95f1ae1464af720eb8",
         "lineage.jsonl": "1bc3e87f66afadfdd841fa50361e743e71ea4f965000456819893b16d534eabe"
+      }
+    },
+    {
+      "run_id": "main_v16_final",
+      "path": "outputs/main_v16_final",
+      "status": "superseded_quantitative",
+      "use": "historical_and_qualitative_only",
+      "superseded_on": "2026-08-30",
+      "reasons": [
+        "attack_evaluator_v4_numbered_defensive_advice_false_positive"
+      ],
+      "note": "Preserve original artifacts for lineage, debugging, and qualitative review. Quantitative conclusions that depend on attack_success, compliance rate, or filter effectiveness are superseded and require offline rescoring with evaluator v5.",
+      "preserve_source_artifacts": true,
+      "artifact_sha256": {
+        "manifest.json": "aafd2ea1af817982e3bdbe717c08a5fdd415483e9dad188139b7d48cb99b74e1",
+        "summary.json": "075adb63d6fc423da48a9b618e06f112b0fa27c319fc2659c3e4db991a84c9ca",
+        "outputs.jsonl": "22f6ef115420f9b562b4bb01b8ab48fdc0939a14c60b402d3b664cb1d132a27f"
+      }
+    },
+    {
+      "run_id": "main_v18_grammar_exfil",
+      "path": "outputs/main_v18_grammar_exfil",
+      "status": "superseded_quantitative",
+      "use": "historical_and_qualitative_only",
+      "superseded_on": "2026-08-30",
+      "reasons": [
+        "attack_evaluator_v4_numbered_content_actionability_false_positive"
+      ],
+      "note": "Preserve original artifacts for lineage, debugging, and qualitative review. Quantitative conclusions that depend on attack_success, compliance rate, or filter effectiveness are superseded and require offline rescoring with evaluator v5.",
+      "preserve_source_artifacts": true,
+      "artifact_sha256": {
+        "manifest.json": "cbf92b66750a0ce2da8aa7e00fea09fd7d9d47fe8111369c092db0b8065e9e2d",
+        "summary.json": "fe01bb74942a7c25f3640e0efe38d4849e53520283dfc954477e7ab23a2adfab",
+        "outputs.jsonl": "e7fec581f6f60e7feaf3c587bb12438476d3cf30d71596abfaf92afea8dae79c"
       }
     }
   ]

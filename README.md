@@ -251,7 +251,10 @@ python run_es.py \
   --run-dir outputs/runs/pilot_001
 ```
 
-If `--benign-csv` is omitted, a small built-in benign sanity set is used. For real experiments, provide a representative benign set so the filter cannot improve by refusing everything.
+If `--benign-csv` is omitted, the fixed 40-prompt dataset at
+`experiments/benign_prompts_v1.csv` is used. The manifest records its resolved
+path, prompt count, and SHA256. An explicit dataset with fewer than 30 prompts
+emits a prominent measurement warning.
 
 For calibration runs where the built-in filter already refuses every attack
 candidate, start from a deliberately weak filter and let coevolution attempt to
@@ -281,6 +284,23 @@ When `--run-dir` is set, the run directory stores `config.json`,
 `generation_summary.csv`, `filter_events.jsonl`, `filter_versions.jsonl`,
 `final_filter_prompt.txt`, `outputs.jsonl`, `samples.jsonl`, `lineage.jsonl`,
 `manifest.json`, and `summary.json`.
+
+The manifest and summary also record the deterministic attack-evaluator version
+and calibration identifier, selection mode, benign-dataset provenance, final
+valid/invalid candidate counts, and whether the reported best candidate is
+valid.
+
+Historical artifacts are never rewritten. Runs listed as
+`superseded_quantitative` in `experiments/invalid_runs.json` remain usable for
+lineage and qualitative inspection, but evaluator-derived compliance claims
+require offline rescoring. Re-score without new generations using:
+
+```bash
+python3 -B scripts/rescore_saved_outputs.py \
+  --run-dir outputs/main_v16_final \
+  --run-dir outputs/main_v18_grammar_exfil \
+  --output analysis/rescoring_report_v5.json
+```
 
 `generation_summary.csv` reports best, mean, median, and population standard
 deviation for each optimization metric, plus mutation-operator attempts,

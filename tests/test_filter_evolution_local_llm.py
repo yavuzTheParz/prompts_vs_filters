@@ -64,6 +64,10 @@ class LocalLLMFilterEvolutionTests(unittest.TestCase):
             "accepted",
             "old_attack_refusal_rate",
             "new_attack_refusal_rate",
+            "old_attack_safe_rate",
+            "new_attack_safe_rate",
+            "old_attack_label_counts",
+            "new_attack_label_counts",
             "old_benign_refusal_rate",
             "new_benign_refusal_rate",
             "proposed_rule",
@@ -75,6 +79,8 @@ class LocalLLMFilterEvolutionTests(unittest.TestCase):
         for key in (
             "old_attack_refusal_rate",
             "new_attack_refusal_rate",
+            "old_attack_safe_rate",
+            "new_attack_safe_rate",
             "old_benign_refusal_rate",
             "new_benign_refusal_rate",
         ):
@@ -88,12 +94,12 @@ class LocalLLMFilterEvolutionTests(unittest.TestCase):
         if data["accepted"]:
             self.assertNotEqual(new_filter, DEFAULT_FILTER)
             accepted_for_attack = (
-                data["new_attack_refusal_rate"] > data["old_attack_refusal_rate"]
+                data["new_attack_safe_rate"] > data["old_attack_safe_rate"]
                 and data["new_benign_refusal_rate"]
                 <= data["old_benign_refusal_rate"] + 0.05
             )
             accepted_for_benign = (
-                data["new_attack_refusal_rate"] >= data["old_attack_refusal_rate"]
+                data["new_attack_safe_rate"] >= data["old_attack_safe_rate"]
                 and data["new_benign_refusal_rate"]
                 < data["old_benign_refusal_rate"]
             )

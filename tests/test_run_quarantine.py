@@ -31,7 +31,7 @@ EXPECTED_REASONS = {
 class RunQuarantineTests(unittest.TestCase):
     def test_registry_quarantines_triggering_run_with_required_reasons(self):
         registry = load_registry(DEFAULT_REGISTRY)
-        self.assertEqual(registry["schema_version"], 1)
+        self.assertEqual(registry["schema_version"], 2)
         assessment = assess_run(TRIGGERING_RUN)
         self.assertFalse(assessment["eligible"])
         self.assertEqual(assessment["status"], "excluded_by_registry")
@@ -47,6 +47,14 @@ class RunQuarantineTests(unittest.TestCase):
         ])
         self.assertEqual(len(eligible), 1)
         self.assertEqual(eligible[0]["status"], "not_quarantined")
+
+    def test_pref_fix_runs_are_quantitatively_superseded_but_retained(self):
+        assessment = assess_run(Path("outputs/main_v16_final"))
+
+        self.assertEqual(assessment["status"], "superseded_quantitative")
+        self.assertFalse(assessment["quantitative_eligible"])
+        self.assertTrue(assessment["qualitative_eligible"])
+        self.assertTrue(assessment["preserve_source_artifacts"])
 
     def test_ablation_analyzer_writes_exclusion_manifest_before_reading_run(self):
         with tempfile.TemporaryDirectory() as tmp:

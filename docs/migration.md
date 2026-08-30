@@ -8,6 +8,15 @@ primarily embedding similarity.
 
 Do not combine or directly compare those values with post-fix results.
 
+Evaluator-v4 runs can additionally overcount harmful compliance when a refusal
+contains a numbered list of defensive advice. Registry entries marked
+`superseded_quantitative` preserve those runs for historical and qualitative
+use while excluding their original evaluator-derived attack-success,
+compliance-rate, and filter-effectiveness values from quantitative conclusions.
+Use `scripts/rescore_saved_outputs.py` to compare stored v4 labels with current
+deterministic labels without generating new model responses or modifying source
+artifacts.
+
 ## Required labels
 
 - Label old tables and plots as `historical_pre_fix_pilot`.

@@ -11,7 +11,11 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
-from evolutionary_strategy import ESConfig, evolutionary_strategy_run
+from evolutionary_strategy import (
+    ESConfig,
+    benign_dataset_provenance,
+    evolutionary_strategy_run,
+)
 from evaluators import DefensiveComplianceEvaluator
 from mr_objective import (
     BEHAVIORAL_DEVIATION,
@@ -22,6 +26,7 @@ from mr_objective import (
     mr_direction_description,
     normalize_mr_objective,
 )
+from selection import validity_key
 
 
 DEFAULT_FILTER_PROMPT = (
@@ -278,6 +283,20 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     root = Path(run_dir)
     root.mkdir(parents=True, exist_ok=True)
 
+    evaluator_metadata = DefensiveComplianceEvaluator().metadata()
+    benign_dataset = dict(getattr(result, "benign_dataset", {}) or {})
+    if not benign_dataset:
+        benign_dataset = benign_dataset_provenance(config.benign_csv_path)
+    final_population = list(getattr(result, "population", []) or [])
+    valid_final_count = sum(validity_key(prompt) > 0.0 for prompt in final_population)
+    invalid_final_count = len(final_population) - valid_final_count
+    best_is_valid = validity_key(result.best) > 0.0
+    if valid_final_count and not best_is_valid:
+        raise AssertionError(
+            "Final-population invariant violated: an invalid best candidate was "
+            "reported despite the presence of a valid candidate"
+        )
+
     config_payload = _sanitize_payload({
         "args": {k: v for k, v in vars(args).items() if k != "api_key"},
         "config": _safe_asdict(config),
@@ -287,7 +306,9 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
             "formula": fitness_formula(config.mr_objective),
             "definition": mr_direction_description(config.mr_objective),
         },
-        "attack_evaluator": DefensiveComplianceEvaluator().metadata(),
+        "attack_evaluator": evaluator_metadata,
+        "selection_mode": config.selection_mode,
+        "benign_dataset": benign_dataset,
         "filter_mode": (
             "coevolution" if config.filter_update_every > 0 else "fixed_filter"
         ),
@@ -315,6 +336,13 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
             },
             "mr_objective": config.mr_objective,
             "filter_mode": config_payload["filter_mode"],
+            "selection_mode": config.selection_mode,
+            "attack_evaluator": evaluator_metadata,
+            "calibration_fixture_id": evaluator_metadata["calibration_fixture_id"],
+            "benign_dataset": benign_dataset,
+            "valid_final_population_candidates": valid_final_count,
+            "invalid_final_population_candidates": invalid_final_count,
+            "best_candidate_is_valid": best_is_valid,
             "dependencies": _dependency_versions(),
         }
     )
@@ -328,6 +356,13 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
         "generations_completed": len(result.history),
         "filter_versions": len(getattr(result, "filter_versions", [])),
         "sample_attempts": len(getattr(result, "sample_records", [])),
+        "attack_evaluator": evaluator_metadata,
+        "calibration_fixture_id": evaluator_metadata["calibration_fixture_id"],
+        "selection_mode": config.selection_mode,
+        "benign_dataset": benign_dataset,
+        "valid_final_population_candidates": valid_final_count,
+        "invalid_final_population_candidates": invalid_final_count,
+        "best_candidate_is_valid": best_is_valid,
     }
     (root / "summary.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=False),
@@ -460,7 +495,7 @@ def parse_args():
                         help="Number of top-fitness prompts used to inform each filter update.")
     parser.add_argument("--benign-csv", default=None,
                         help="CSV of benign prompts used to measure filter false-positive rate. "
-                             "If omitted, a small built-in set is used. Provide a real set for valid experiments.")
+                             "If omitted, experiments/benign_prompts_v1.csv is used.")
     parser.add_argument("--max-filter-chars", type=int, default=4000,
                         help="Reject candidate filter updates longer than this character limit.")
     parser.add_argument("--initial-filter-prompt", default=None,
