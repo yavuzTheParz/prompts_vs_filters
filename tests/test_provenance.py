@@ -115,7 +115,7 @@ class ProvenanceTests(unittest.TestCase):
         self.assertIn("commit_sha", manifest)
         self.assertIn("dependencies", manifest)
         self.assertEqual(manifest["selection_mode"], "scalar")
-        self.assertEqual(manifest["attack_evaluator"]["version"], "defensive-compliance-v5.2")
+        self.assertEqual(manifest["attack_evaluator"]["version"], "defensive-compliance-v5.3")
         self.assertEqual(manifest["benign_dataset"]["prompt_count"], 40)
         self.assertEqual(len(manifest["benign_dataset"]["sha256"]), 64)
         self.assertEqual(

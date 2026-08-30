@@ -22,7 +22,10 @@ same-segment harmful continuation after a refusal. Evaluator v5.1 narrowed the
 excluded refusal scope, but its direct-comma heuristic could misread coordinated
 actions inside a genuine refusal as a new continuation. Evaluator v5.2 models
 common refusal complements before deciding whether a comma ends refusal scope.
-Runs using evaluator v5 or v5.1 are therefore also superseded for
+Evaluator v5.3 removes the remaining action-verb whitelist from refusal parsing:
+open complements are now recognized from grammatical markers, while harmfulness
+is determined separately from retained text. Runs using evaluator v5, v5.1, or
+v5.2 are therefore also superseded for
 evaluator-derived quantitative conclusions.
 
 ## Required labels

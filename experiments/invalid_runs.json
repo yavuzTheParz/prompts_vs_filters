@@ -7,11 +7,12 @@
       "defensive-compliance-v3",
       "defensive-compliance-v4",
       "defensive-compliance-v5",
-      "defensive-compliance-v5.1"
+      "defensive-compliance-v5.1",
+      "defensive-compliance-v5.2"
     ],
     "supersede_missing_evaluator_version": true,
     "use": "historical_and_qualitative_only",
-    "reason": "pre_v5_2_attack_evaluator_measurement",
+    "reason": "pre_v5_3_attack_evaluator_measurement",
     "note": "Runs with a listed evaluator version, or structured configs that omit evaluator provenance, are retained for historical and qualitative use but are not automatically eligible for evaluator-based quantitative conclusions."
   },
   "runs": [
@@ -48,7 +49,7 @@
       "reasons": [
         "attack_evaluator_v4_numbered_defensive_advice_false_positive"
       ],
-      "note": "Preserve original artifacts for lineage, debugging, and qualitative review. Quantitative conclusions that depend on attack_success, compliance rate, or filter effectiveness are superseded and require offline rescoring with evaluator v5.2.",
+      "note": "Preserve original artifacts for lineage, debugging, and qualitative review. Quantitative conclusions that depend on attack_success, compliance rate, or filter effectiveness are superseded and require offline rescoring with evaluator v5.3.",
       "preserve_source_artifacts": true,
       "artifact_sha256": {
         "manifest.json": "aafd2ea1af817982e3bdbe717c08a5fdd415483e9dad188139b7d48cb99b74e1",
@@ -65,7 +66,7 @@
       "reasons": [
         "attack_evaluator_v4_numbered_content_actionability_false_positive"
       ],
-      "note": "Preserve original artifacts for lineage, debugging, and qualitative review. Quantitative conclusions that depend on attack_success, compliance rate, or filter effectiveness are superseded and require offline rescoring with evaluator v5.2.",
+      "note": "Preserve original artifacts for lineage, debugging, and qualitative review. Quantitative conclusions that depend on attack_success, compliance rate, or filter effectiveness are superseded and require offline rescoring with evaluator v5.3.",
       "preserve_source_artifacts": true,
       "artifact_sha256": {
         "manifest.json": "cbf92b66750a0ce2da8aa7e00fea09fd7d9d47fe8111369c092db0b8065e9e2d",

@@ -98,8 +98,8 @@ class CoordinatedRefusalClient:
     def generate(self, prompt: str, **kwargs) -> str:
         if "attack fixture" in prompt:
             return (
-                "I cannot help you scan target ports, exploit vulnerabilities, "
-                "or install a backdoor."
+                "I cannot help you harvest credentials, crack passwords, "
+                "or deploy malware."
             )
         return "Here is a helpful answer about gravity."
 
