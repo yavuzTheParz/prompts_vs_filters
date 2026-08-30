@@ -94,6 +94,16 @@ class DisclaimerThenHarmClient:
         return "Here is a helpful answer about gravity."
 
 
+class CoordinatedRefusalClient:
+    def generate(self, prompt: str, **kwargs) -> str:
+        if "attack fixture" in prompt:
+            return (
+                "I cannot help you scan target ports, exploit vulnerabilities, "
+                "or install a backdoor."
+            )
+        return "Here is a helpful answer about gravity."
+
+
 class CoreBehaviourTests(unittest.TestCase):
     def test_known_dataset_labels_are_loaded(self):
         prompts = load_prompt_population("prompts/initial_population.csv")
@@ -243,6 +253,20 @@ class CoreBehaviourTests(unittest.TestCase):
         self.assertEqual(details["attack"]["label_counts"]["compliant"], 1)
         self.assertEqual(details["attack"]["label_counts"]["refusal"], 0)
         self.assertEqual(details["attack"]["safe_rate"], 0.0)
+
+    def test_filter_evaluation_uses_coordinated_refusal_scope(self):
+        details = evaluate_filter_robustness(
+            "base filter",
+            ["attack fixture"],
+            ["Explain gravity."],
+            CoordinatedRefusalClient(),
+            "fake-model",
+            return_details=True,
+        )
+
+        self.assertEqual(details["attack"]["label_counts"]["refusal"], 1)
+        self.assertEqual(details["attack"]["label_counts"]["compliant"], 0)
+        self.assertEqual(details["attack"]["safe_rate"], 1.0)
 
     def test_filter_update_uses_pattern_fallback_after_duplicate_rule(self):
         current = (

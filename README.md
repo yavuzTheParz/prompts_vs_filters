@@ -299,7 +299,7 @@ require offline rescoring. Re-score without new generations using:
 python3 -B scripts/rescore_saved_outputs.py \
   --run-dir outputs/main_v16_final \
   --run-dir outputs/main_v18_grammar_exfil \
-  --output analysis/rescoring_report_v5_1.json
+  --output analysis/rescoring_report_v5_2.json
 ```
 
 `generation_summary.csv` reports best, mean, median, and population standard

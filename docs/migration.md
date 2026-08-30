@@ -18,10 +18,11 @@ deterministic labels without generating new model responses or modifying source
 artifacts.
 
 Evaluator v5 fixed that numbered-advice false positive but could discard a
-same-segment harmful continuation after a refusal. Evaluator v5.1 narrows the
-excluded refusal scope and is the first version that includes regression
-coverage for colon, semicolon, comma, contrast-marker, and multiline
-continuations. Runs using evaluator v5 are therefore also superseded for
+same-segment harmful continuation after a refusal. Evaluator v5.1 narrowed the
+excluded refusal scope, but its direct-comma heuristic could misread coordinated
+actions inside a genuine refusal as a new continuation. Evaluator v5.2 models
+common refusal complements before deciding whether a comma ends refusal scope.
+Runs using evaluator v5 or v5.1 are therefore also superseded for
 evaluator-derived quantitative conclusions.
 
 ## Required labels
