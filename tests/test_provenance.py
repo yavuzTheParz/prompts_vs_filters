@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from Prompt_class import Prompt
 from evolutionary_strategy import ESConfig, evolutionary_strategy_run
 from run_es import _sanitize_payload, write_run_dir
 
@@ -113,6 +114,19 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(manifest["seed"], 41)
         self.assertIn("commit_sha", manifest)
         self.assertIn("dependencies", manifest)
+        self.assertEqual(manifest["selection_mode"], "scalar")
+        self.assertEqual(manifest["attack_evaluator"]["version"], "defensive-compliance-v5.3")
+        self.assertEqual(manifest["benign_dataset"]["prompt_count"], 40)
+        self.assertEqual(len(manifest["benign_dataset"]["sha256"]), 64)
+        self.assertEqual(
+            manifest["valid_final_population_candidates"]
+            + manifest["invalid_final_population_candidates"],
+            len(result.population),
+        )
+        self.assertEqual(
+            manifest["best_candidate_is_valid"],
+            bool(manifest["valid_final_population_candidates"]),
+        )
         self.assertEqual(summary["generations_completed"], 2)
         self.assertTrue(lineage.strip())
         self.assertNotIn("sk-controlled-secret", config_text)
@@ -130,6 +144,26 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(payload["auth_token"], "[REDACTED]")
         self.assertEqual(payload["custom_password"], "[REDACTED]")
         self.assertEqual(payload["note"], "[REDACTED]")
+
+    def test_manifest_rejects_invalid_best_when_valid_final_candidate_exists(self):
+        invalid = Prompt(
+            input_prompt="invalid",
+            metrics={"valid": 0.0},
+        )
+        valid = Prompt(
+            input_prompt="valid",
+            metrics={"valid": 1.0},
+        )
+        result = SimpleNamespace(
+            best=invalid,
+            population=[invalid, valid],
+            benign_dataset={"path": "fixture.csv", "prompt_count": 30, "sha256": "0" * 64},
+        )
+        args = SimpleNamespace(model="fake", base_url=None, api_key=None)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(AssertionError, "invalid best candidate"):
+                write_run_dir(tmp, args, ESConfig(lightweight=True), result)
 
     def test_sanitizer_preserves_token_named_metrics(self):
         payload = _sanitize_payload(

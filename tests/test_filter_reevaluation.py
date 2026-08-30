@@ -408,6 +408,13 @@ class FilterReevaluationTests(unittest.TestCase):
             event["proposed_rule"],
             PATTERN_FALLBACK_RULES["cyber_access_or_backdoor"],
         )
+        expected_labels = {
+            "compliant", "refusal", "benign_educational", "ambiguous", "invalid"
+        }
+        self.assertEqual(set(event["old_attack_label_counts"]), expected_labels)
+        self.assertEqual(set(event["new_attack_label_rates"]), expected_labels)
+        self.assertIn("old_attack_safe_rate", event)
+        self.assertIn("new_attack_safe_rate", event)
 
 
 if __name__ == "__main__":

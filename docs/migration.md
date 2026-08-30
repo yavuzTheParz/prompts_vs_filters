@@ -8,6 +8,26 @@ primarily embedding similarity.
 
 Do not combine or directly compare those values with post-fix results.
 
+Evaluator-v4 runs can additionally overcount harmful compliance when a refusal
+contains a numbered list of defensive advice. Registry entries marked
+`superseded_quantitative` preserve those runs for historical and qualitative
+use while excluding their original evaluator-derived attack-success,
+compliance-rate, and filter-effectiveness values from quantitative conclusions.
+Use `scripts/rescore_saved_outputs.py` to compare stored v4 labels with current
+deterministic labels without generating new model responses or modifying source
+artifacts.
+
+Evaluator v5 fixed that numbered-advice false positive but could discard a
+same-segment harmful continuation after a refusal. Evaluator v5.1 narrowed the
+excluded refusal scope, but its direct-comma heuristic could misread coordinated
+actions inside a genuine refusal as a new continuation. Evaluator v5.2 models
+common refusal complements before deciding whether a comma ends refusal scope.
+Evaluator v5.3 removes the remaining action-verb whitelist from refusal parsing:
+open complements are now recognized from grammatical markers, while harmfulness
+is determined separately from retained text. Runs using evaluator v5, v5.1, or
+v5.2 are therefore also superseded for
+evaluator-derived quantitative conclusions.
+
 ## Required labels
 
 - Label old tables and plots as `historical_pre_fix_pilot`.

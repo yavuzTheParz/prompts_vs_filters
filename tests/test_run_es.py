@@ -113,7 +113,7 @@ class RunArtifactMRObjectiveTests(unittest.TestCase):
         )
         self.assertEqual(
             payload["attack_evaluator"]["version"],
-            "defensive-compliance-v4",
+            "defensive-compliance-v5.3",
         )
         self.assertIn("threshold", payload["attack_evaluator"])
         self.assertIn("prompt_template", payload["attack_evaluator"])

@@ -20,14 +20,17 @@ def _canonical_path(path: Path | str, *, root: Path = ROOT) -> Path:
 
 def load_registry(path: Path = DEFAULT_REGISTRY) -> dict:
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if payload.get("schema_version") != 1:
+    if payload.get("schema_version") not in {1, 2}:
         raise ValueError("Unsupported invalid-run registry schema")
     runs = payload.get("runs")
     if not isinstance(runs, list):
         raise ValueError("Invalid-run registry must contain a runs list")
     for entry in runs:
-        if entry.get("status") != "invalid":
-            raise ValueError("Registry entries must have status='invalid'")
+        if entry.get("status") not in {"invalid", "superseded_quantitative"}:
+            raise ValueError(
+                "Registry entries must have status='invalid' or "
+                "'superseded_quantitative'"
+            )
         if not entry.get("run_id") or not entry.get("path") or not entry.get("reasons"):
             raise ValueError("Registry entries require run_id, path, and reasons")
     return payload
@@ -44,11 +47,18 @@ def assess_run(
     for entry in registry["runs"]:
         registered = _canonical_path(entry["path"], root=root)
         if requested == registered:
+            registry_status = entry["status"]
             return {
                 "run_id": entry["run_id"],
                 "path": entry["path"],
-                "status": "excluded_by_registry",
+                "status": (
+                    "excluded_by_registry"
+                    if registry_status == "invalid"
+                    else "superseded_quantitative"
+                ),
                 "eligible": False,
+                "quantitative_eligible": False,
+                "qualitative_eligible": registry_status == "superseded_quantitative",
                 "use": entry.get("use", "diagnostic_only"),
                 "exclusion_reasons": list(entry["reasons"]),
                 "note": entry.get("note", ""),
@@ -57,11 +67,46 @@ def assess_run(
                 ),
                 "registry": str(registry_path),
             }
+    policy = registry.get("quantitative_supersession_policy", {})
+    config_path = requested / "config.json"
+    if config_path.is_file() and policy:
+        try:
+            config_payload = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            config_payload = {}
+        evaluator_version = str(
+            (config_payload.get("attack_evaluator") or {}).get("version", "")
+        ).strip()
+        superseded_versions = set(policy.get("attack_evaluator_versions", []))
+        missing_is_superseded = bool(
+            policy.get("supersede_missing_evaluator_version", False)
+        )
+        if evaluator_version in superseded_versions or (
+            not evaluator_version and missing_is_superseded
+        ):
+            return {
+                "run_id": requested.name,
+                "path": str(run_dir),
+                "status": "superseded_quantitative",
+                "eligible": False,
+                "quantitative_eligible": False,
+                "qualitative_eligible": True,
+                "use": policy.get("use", "historical_and_qualitative_only"),
+                "exclusion_reasons": [
+                    policy.get("reason", "pre_fix_attack_evaluator")
+                ],
+                "note": policy.get("note", ""),
+                "preserve_source_artifacts": True,
+                "attack_evaluator_version": evaluator_version or "unrecorded",
+                "registry": str(registry_path),
+            }
     return {
         "run_id": requested.name,
         "path": str(run_dir),
         "status": "not_quarantined",
         "eligible": True,
+        "quantitative_eligible": True,
+        "qualitative_eligible": True,
         "exclusion_reasons": [],
         "registry": str(registry_path),
     }

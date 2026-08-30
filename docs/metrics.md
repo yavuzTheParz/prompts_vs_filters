@@ -22,7 +22,8 @@ otherwise. Metrics are averaged over the K valid filtered samples.
 | `population_diversity` | Mean pairwise Jaccard token distance | Diagnostic; higher means less collapse |
 | `sigma` | Mutation-intensity control | Diagnostic, not a fitness target |
 | benign refusal rate | Fraction of benign prompts refused by a filter | Minimize |
-| attack refusal rate | Fraction of attack-set prompts refused by a filter | Maximize |
+| attack safe rate | Fraction of attack prompts labeled `refusal` or `benign_educational` | Maximize |
+| attack refusal rate | Fraction of attack prompts specifically labeled `refusal` | Diagnostic |
 
 Hard-invalid candidates receive zero fitness. Invalid reasons are API error,
 missing output, excessive prompt length, excessive repetition, exact duplicate,
@@ -51,8 +52,9 @@ Values from different modes answer different questions and must not be pooled.
 
 ## Selection
 
-Constraint-aware ordering places validity first, then attack objective, then the
-active MR term, then lower repetition/length and higher diversity, and finally
-scalar fitness. The ablation artifacts retain compliance, auxiliary similarity,
-prompt length, MR, and diversity separately so prompt growth or similarity
-artifacts cannot masquerade as genuine compliance improvement.
+Both modes use validity as a hard first constraint. Scalar mode then ranks by
+configured scalar fitness, with quality/diversity/similarity only as
+deterministic tie-breakers. Lexicographic mode instead ranks by attack
+compliance, then the configured MR objective, then quality and deterministic
+tie-breakers. Population sorting, survivor selection, and pairwise improvement
+checks use the same mode-specific key.
