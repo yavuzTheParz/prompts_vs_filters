@@ -6,11 +6,14 @@ import statistics
 from collections import Counter
 from typing import Dict, List, Sequence
 
+from ml_runtime import configure_transformers_for_pytorch
 from Prompt_class import Content, Prompt
 from evaluators import DefensiveComplianceEvaluator, summarize_evaluations
 from mr_objective import BEHAVIORAL_DEVIATION, mr_component
 from prompt_rendering import render_prompt
 from quality_constraints import fluency_score, repetition_penalty
+
+configure_transformers_for_pytorch()
 
 try:
     from bert_score import score as bertscore_score

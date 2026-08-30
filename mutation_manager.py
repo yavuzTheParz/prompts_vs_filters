@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, replace
 from typing import List, Optional, Tuple
 
+from ml_runtime import configure_transformers_for_pytorch
 from prompt_rendering import (
     PromptValidationError,
     parse_internal_prompt,
@@ -13,6 +14,8 @@ from prompt_rendering import (
     serialize_internal_prompt,
     validate_internal_prompt,
 )
+
+configure_transformers_for_pytorch()
 
 try:
     import numpy as np
