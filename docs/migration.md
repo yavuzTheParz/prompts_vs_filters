@@ -17,6 +17,13 @@ Use `scripts/rescore_saved_outputs.py` to compare stored v4 labels with current
 deterministic labels without generating new model responses or modifying source
 artifacts.
 
+Evaluator v5 fixed that numbered-advice false positive but could discard a
+same-segment harmful continuation after a refusal. Evaluator v5.1 narrows the
+excluded refusal scope and is the first version that includes regression
+coverage for colon, semicolon, comma, contrast-marker, and multiline
+continuations. Runs using evaluator v5 are therefore also superseded for
+evaluator-derived quantitative conclusions.
+
 ## Required labels
 
 - Label old tables and plots as `historical_pre_fix_pilot`.
