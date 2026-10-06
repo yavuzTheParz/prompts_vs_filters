@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import subprocess
 import sys
 import time
@@ -173,6 +174,10 @@ def execute(args, jobs: List[Dict[str, object]]) -> int:
     suffix = f"_{args.shard.replace('/', 'of')}" if args.shard else ""
     status_path = root / f"campaign_status_{args.phase}{suffix}.csv"
     failures = 0
+    # Output is redirected to a file, where Windows would otherwise use the
+    # legacy code page and fail on the first character it cannot encode
+    # (model-written filter rules and prompts are arbitrary Unicode).
+    child_env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     for position, job in enumerate(jobs, start=1):
         run_dir: Path = job["run_dir"]
         if job["state"] == "done":
@@ -187,7 +192,9 @@ def execute(args, jobs: List[Dict[str, object]]) -> int:
         with (run_dir / "stdout.log").open("a", encoding="utf-8") as log:
             log.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(job['command'])}\n")
             log.flush()
-            code = subprocess.call(job["command"], cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT)
+            code = subprocess.call(
+                job["command"], cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT, env=child_env
+            )
         summary = read_summary(run_dir)
         ok = code == 0 and bool(summary)
         failures += 0 if ok else 1
