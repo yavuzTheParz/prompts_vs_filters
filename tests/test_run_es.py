@@ -90,7 +90,15 @@ class RunArtifactMRObjectiveTests(unittest.TestCase):
             client=None,
         )
 
-        self.assertEqual(first.history, second.history)
+        def without_wall_clock(history):
+            return [
+                {k: v for k, v in row.items() if k != "generation_seconds"}
+                for row in history
+            ]
+
+        self.assertEqual(
+            without_wall_clock(first.history), without_wall_clock(second.history)
+        )
         self.assertEqual(first.sample_records, second.sample_records)
         self.assertEqual(first.best.input_prompt, second.best.input_prompt)
 

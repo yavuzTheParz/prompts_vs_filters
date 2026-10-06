@@ -8,7 +8,11 @@ from typing import Dict, List, Sequence
 
 from ml_runtime import configure_transformers_for_pytorch
 from Prompt_class import Content, Prompt
-from evaluators import DefensiveComplianceEvaluator, summarize_evaluations
+from evaluators import (
+    DefensiveComplianceEvaluator,
+    attack_progress,
+    summarize_evaluations,
+)
 from mr_objective import BEHAVIORAL_DEVIATION, mr_component
 from prompt_rendering import render_prompt
 from quality_constraints import fluency_score, repetition_penalty
@@ -98,6 +102,7 @@ def _base_metrics(prompt: Prompt, asv: float = 0.0, mr: float = 0.0) -> Dict[str
         "benign_educational_count": 0.0,
         "invalid_count": 0.0,
         "unsafe_reference_similarity": 0.0,
+        "attack_progress": 0.0,
         "mr": float(mr),
         "behavioral_deviation": float(behavioral_deviation),
         "mr_component": float(behavioral_deviation),
@@ -281,6 +286,10 @@ def evaluate_fitness(
             for label, count in evaluation_summary["class_counts"].items():
                 p.metrics[f"{label}_count"] = float(count)
             p.metrics["unsafe_reference_similarity"] = float(reference_similarity)
+            progress_vals = [attack_progress(result) for result in evaluations]
+            p.metrics["attack_progress"] = float(
+                sum(progress_vals) / len(progress_vals)
+            )
             p.metrics["sample_count"] = float(len(reference_similarity_vals))
             p.metrics["asv_std"] = (
                 float(statistics.pstdev(compliance_vals))
@@ -416,6 +425,10 @@ def evaluate_fitness_bertscore(
         for label, count in evaluation_summary["class_counts"].items():
             p.metrics[f"{label}_count"] = float(count)
         p.metrics["unsafe_reference_similarity"] = float(asv_i)
+        p.metrics["attack_progress"] = float(
+            sum(attack_progress(result) for result in evaluations)
+            / len(evaluations)
+        )
         p.metrics["sample_count"] = float(len(cand_list))
         p.metrics["asv_std"] = (
             float(statistics.pstdev(asv_values)) if len(asv_values) > 1 else 0.0

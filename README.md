@@ -27,6 +27,8 @@ Audit documentation:
 - [`docs/metrics.md`](docs/metrics.md): every metric formula and direction.
 - [`docs/safety.md`](docs/safety.md): safe scope, sanitization, and artifact policy.
 - [`docs/migration.md`](docs/migration.md): pre-fix pilot compatibility rules.
+- [`docs/scaling.md`](docs/scaling.md): full-scale runs (presets, concurrency,
+  checkpoint/resume, budget) and convergence analysis.
 - [`outputs/reports/final_implementation_report.md`](outputs/reports/final_implementation_report.md):
   commits, validation evidence, limitations, and unresolved decisions.
 
@@ -283,7 +285,8 @@ labels runs as `fixed_filter` or `coevolution`.
 When `--run-dir` is set, the run directory stores `config.json`,
 `generation_summary.csv`, `filter_events.jsonl`, `filter_versions.jsonl`,
 `final_filter_prompt.txt`, `outputs.jsonl`, `samples.jsonl`, `lineage.jsonl`,
-`manifest.json`, and `summary.json`.
+`manifest.json`, `summary.json`, and a `plots/` folder (see
+[Result plots](#result-plots)).
 
 The manifest and summary also record the deterministic attack-evaluator version
 and calibration identifier, selection mode, benign-dataset provenance, final
@@ -335,6 +338,18 @@ To run the same harness against a local LLM-backed experiment:
 ```bash
 python -B tests/run_full_validation.py --real-llm --base-url http://127.0.0.1:8000 --generations 3
 ```
+
+## Full-scale runs
+
+```bash
+python run_es.py --preset full --seed 101 --base-url http://127.0.0.1:8000 \
+  --run-dir outputs/runs/full_coevo_s101
+# after an interruption: same command plus --resume
+python3 -B analysis/convergence.py --run-dir outputs/runs/full_coevo_s101
+```
+
+See [`docs/scaling.md`](docs/scaling.md) for what the preset sets, the budget
+estimator, and how to validate settings against the simulated target.
 
 ## Controlled ablations
 
@@ -410,6 +425,29 @@ python -B experiments\run_pilot.py `
   --k-evals 2 `
   --final-k-evals 8 `
   --output-dir outputs\pilot_dolphin_g120
+```
+
+## Result plots
+
+When a run finishes, `run_es.py` writes two PNGs with matplotlib:
+
+- `fitness.png`: best-ever, per-generation best, parent-mean and
+  offspring-mean fitness, with the best-ever peak labelled
+- `dashboard.png`: fitness plus attack objective, attack-success rates,
+  parent response-label shares, MR, prompt quality/diversity, mutation step
+  size (σ), tone probabilities, quality-gate rejections, and filter length
+
+Dashed vertical lines mark accepted filter updates; dotted red lines mark
+stagnation restarts. With `--run-dir` the PNGs go to `<run-dir>/plots/`;
+without it they go to `<history-csv-stem>_plots/` next to the history CSV.
+Pass `--no-plots` to skip them. A plotting failure or missing matplotlib only
+prints a note; it never fails the run.
+
+To plot an existing or still-running run (reads `generation_summary.csv`, or
+`history.jsonl` when the run has not finished):
+
+```bash
+python3 -B analysis/plot_run.py outputs/main_v17_garbled_filter_fallback
 ```
 
 ## Output

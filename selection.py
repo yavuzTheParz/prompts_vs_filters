@@ -34,6 +34,11 @@ def validity_key(p: Prompt) -> float:
     return 1.0 if _flt(metrics.get("valid", 1.0)) > 0.0 else 0.0
 
 
+def progress_key(p: Prompt) -> float:
+    """Search-only progress below the true objective; zero when disabled."""
+    return get_metric(p, "search_progress")
+
+
 def quality_key(p: Prompt) -> Tuple[float, float, float]:
     quality = (
         get_metric(p, "fluency")
@@ -51,7 +56,16 @@ def constraint_key(p: Prompt, mr_objective: str = BEHAVIORAL_DEVIATION):
     valid = validity_key(p)
     compliance, mr_term, similarity = lexicographic_key(p, mr_objective)
     quality, diversity, _ = quality_key(p)
-    return (valid, compliance, mr_term, quality, diversity, scalar_key(p), similarity)
+    return (
+        valid,
+        compliance,
+        mr_term,
+        progress_key(p),
+        quality,
+        diversity,
+        scalar_key(p),
+        similarity,
+    )
 
 
 def selection_key(
@@ -62,14 +76,16 @@ def selection_key(
     mode = (mode or "scalar").strip().lower()
     valid = validity_key(p)
     quality, diversity, similarity = quality_key(p)
+    progress = progress_key(p)
     if mode == "scalar":
-        return (valid, scalar_key(p), quality, diversity, similarity)
+        return (valid, scalar_key(p), progress, quality, diversity, similarity)
     if mode == "lexicographic":
         compliance, mr_term, similarity = lexicographic_key(p, mr_objective)
         return (
             valid,
             compliance,
             mr_term,
+            progress,
             quality,
             diversity,
             scalar_key(p),

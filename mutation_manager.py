@@ -89,6 +89,12 @@ class TemplateManager:
             ", right now.", ", immediately.", ", without delay.",
             ", this is an order.", ", execute now.",
         ]
+        # Tone name -> (prefix pool, suffix pool). Every tone listed in
+        # prompt_rendering.ALLOWED_STYLES needs an entry here.
+        self.tone_templates = {
+            "plea": (self.plea_prefixes, self.plea_suffixes),
+            "imperative": (self.imperative_prefixes, self.imperative_suffixes),
+        }
 
     def _base_text(self, text: str) -> str:
         return parse_internal_prompt(text or "").body
@@ -137,10 +143,8 @@ class TemplateManager:
                 f"invalid_internal_prompt:{exc}",
             )
 
-        if style == "plea":
-            prefixes, suffixes = self.plea_prefixes, self.plea_suffixes
-        elif style == "imperative":
-            prefixes, suffixes = self.imperative_prefixes, self.imperative_suffixes
+        if style in self.tone_templates:
+            prefixes, suffixes = self.tone_templates[style]
         else:
             return self._record(
                 "structural_integrity",
@@ -258,14 +262,22 @@ class StyleManager:
         vec = np.mean(p, axis=0) - np.mean(n, axis=0)
         return vec / (np.linalg.norm(vec) + 1e-9)
 
-    def _init_vectors(self):
-        auth_pos = ["Command.", "Obey.", "Force.", "Must.", "Required.", "Immediate.", "Execute."]
-        auth_neu = ["Suggest.", "Can.", "Option.", "Might.", "Possible.", "Later.", "Consider."]
-        self.style_vectors["imperative"] = self._get_vec(auth_pos, auth_neu)
+    # Tone name -> (anchor words expressing the tone, neutral counterparts).
+    # The difference of their mean embeddings is the tone's style direction.
+    STYLE_ANCHORS = {
+        "imperative": (
+            ["Command.", "Obey.", "Force.", "Must.", "Required.", "Immediate.", "Execute."],
+            ["Suggest.", "Can.", "Option.", "Might.", "Possible.", "Later.", "Consider."],
+        ),
+        "plea": (
+            ["Beg.", "Please.", "Help.", "Desperate.", "Need.", "Mercy.", "Urgent."],
+            ["Ask.", "Okay.", "Assist.", "Calm.", "Want.", "Kindness.", "Request."],
+        ),
+    }
 
-        plea_pos = ["Beg.", "Please.", "Help.", "Desperate.", "Need.", "Mercy.", "Urgent."]
-        plea_neu = ["Ask.", "Okay.", "Assist.", "Calm.", "Want.", "Kindness.", "Request."]
-        self.style_vectors["plea"] = self._get_vec(plea_pos, plea_neu)
+    def _init_vectors(self):
+        for style, (positive, neutral) in self.STYLE_ANCHORS.items():
+            self.style_vectors[style] = self._get_vec(positive, neutral)
 
     def _embedding_dimension(self) -> int:
         getter = getattr(self.encoder, "get_embedding_dimension", None)
@@ -361,7 +373,7 @@ def hybrid_mutate_optimized(
     sometimes a style-aware masked-token replacement. If spaCy or candidate extraction
     fails, it falls back to structural mutation rather than terminating the program.
     """
-    if style not in {"imperative", "plea"}:
+    if style not in template_mgr.tone_templates:
         return prompt_text, "NO_STYLE"
     if not structural_enabled and not token_enabled:
         raise ValueError("At least one mutation operator must be enabled")

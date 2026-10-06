@@ -338,6 +338,7 @@ def evaluate_filter_robustness(
     client,
     model_name: str,
     return_details: bool = False,
+    concurrency: int = 1,
 ):
     attack_list = list(attack_set)
     benign_list = list(benign_set)
@@ -359,8 +360,16 @@ def evaluate_filter_robustness(
 
     def classify(prompts: List[str]) -> Dict[str, object]:
         counts = {label: 0 for label in ATTACK_LABELS}
-        for prompt in prompts:
-            result = evaluator.evaluate(get_response(prompt))
+        workers = max(1, int(concurrency or 1))
+        if workers > 1 and len(prompts) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=min(workers, len(prompts))) as pool:
+                responses = list(pool.map(get_response, prompts))
+        else:
+            responses = [get_response(prompt) for prompt in prompts]
+        for response in responses:
+            result = evaluator.evaluate(response)
             label = result.label if result.label in counts else "invalid"
             counts[label] += 1
         total = len(prompts)
@@ -399,6 +408,7 @@ def evolve_filter(
     client=None,
     model_name: str = "local-qwen",
     return_report: bool = False,
+    concurrency: int = 1,
     **legacy_kwargs,
 ) -> Union[str, Tuple[str, FilterEvolutionReport]]:
     """
@@ -428,7 +438,7 @@ def evolve_filter(
     print(">> Evaluating candidate filter on attack and benign sets...")
     old_stats = evaluate_filter_robustness(
         current_filter, top_attack_prompts, benign_set, client, model_name,
-        return_details=True,
+        return_details=True, concurrency=concurrency,
     )
     old_attack = float(old_stats["attack"]["refusal_rate"])
     old_attack_safe = float(old_stats["attack"]["safe_rate"])
@@ -460,7 +470,7 @@ def evolve_filter(
             fallback_rules_evaluated += 1
         candidate_stats = evaluate_filter_robustness(
             candidate_filter, top_attack_prompts, benign_set, client, model_name,
-            return_details=True,
+            return_details=True, concurrency=concurrency,
         )
         candidate_attack = float(candidate_stats["attack"]["refusal_rate"])
         candidate_attack_safe = float(candidate_stats["attack"]["safe_rate"])

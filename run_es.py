@@ -13,11 +13,15 @@ from pathlib import Path
 from typing import Optional
 
 from evolutionary_strategy import (
+    DEFAULT_MUTATION_STYLES,
     ESConfig,
+    RunStream,
     benign_dataset_provenance,
     evolutionary_strategy_run,
+    load_checkpoint,
 )
-from evaluators import DefensiveComplianceEvaluator
+from prompt_rendering import ALLOWED_STYLES
+from evaluators import ATTACK_PROGRESS_VERSION, DefensiveComplianceEvaluator
 from mr_objective import (
     BEHAVIORAL_DEVIATION,
     LEGACY_MR_OBJECTIVE_ALIASES,
@@ -277,6 +281,15 @@ def _final_population_output_rows(result):
     return rows
 
 
+def _sample_attempt_count(root: Path, result) -> int:
+    if getattr(result, "samples_streamed", False):
+        path = root / RunStream.SAMPLES
+        if path.is_file():
+            with path.open(encoding="utf-8") as handle:
+                return sum(1 for line in handle if line.strip())
+    return len(getattr(result, "sample_records", []))
+
+
 def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     if not run_dir:
         return
@@ -308,10 +321,13 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
             "definition": mr_direction_description(config.mr_objective),
         },
         "attack_evaluator": evaluator_metadata,
+        "attack_progress_version": ATTACK_PROGRESS_VERSION,
         "selection_mode": config.selection_mode,
         "benign_dataset": benign_dataset,
         "filter_mode": (
-            "coevolution" if config.filter_update_every > 0 else "fixed_filter"
+            "coevolution"
+            if config.filter_update_every > 0 or config.filter_update_every_evaluations > 0
+            else "fixed_filter"
         ),
     })
     (root / "config.json").write_text(
@@ -325,7 +341,8 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     _write_jsonl(root / "filter_events.jsonl", getattr(result, "filter_events", []))
     _write_jsonl(root / "filter_versions.jsonl", getattr(result, "filter_versions", []))
     _write_jsonl(root / "outputs.jsonl", _final_population_output_rows(result))
-    _write_jsonl(root / "samples.jsonl", getattr(result, "sample_records", []))
+    if not getattr(result, "samples_streamed", False):
+        _write_jsonl(root / "samples.jsonl", getattr(result, "sample_records", []))
     _write_jsonl(root / "lineage.jsonl", getattr(result, "lineage_records", []))
     final_reevaluation = getattr(result, "final_reevaluation", {}) or {}
     if final_reevaluation:
@@ -376,8 +393,15 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
         "best_metrics": _sanitize_payload(dict(result.best.metrics or {})),
         "runtime_sec": float(result.runtime_sec),
         "generations_completed": len(result.history),
+        "attacker_calls": int(getattr(result, "attacker_calls", 0)),
+        "defender_calls": int(getattr(result, "defender_calls", 0)),
+        "stop_reason": getattr(result, "stop_reason", "generations"),
+        "max_evaluations": int(config.max_evaluations),
+        "best_ever_fitness": float(
+            max((row.get("best_ever_fitness", 0.0) for row in result.history), default=0.0)
+        ),
         "filter_versions": len(getattr(result, "filter_versions", [])),
-        "sample_attempts": len(getattr(result, "sample_records", [])),
+        "sample_attempts": _sample_attempt_count(root, result),
         "final_reevaluation": _sanitize_payload(final_reevaluation),
         "benign_holdout": _sanitize_payload(benign_holdout),
         "attack_evaluator": evaluator_metadata,
@@ -394,7 +418,24 @@ def write_run_dir(run_dir: str, args, config: ESConfig, result) -> None:
     )
 
 
-def parse_args():
+def write_plots(args) -> list:
+    """Fitness and metric PNGs for the finished run; never fails the run."""
+    source = args.run_dir or args.history_csv
+    if not getattr(args, "plots", True) or not source:
+        return []
+    try:
+        from analysis.plot_run import plot_run
+
+        written = plot_run(source)
+    except Exception as exc:  # plotting is a convenience, not part of the result
+        print(f"Plotting skipped:     {exc!r}")
+        return []
+    if not written:
+        print("Plotting skipped:     matplotlib is not installed or the history is empty")
+    return written
+
+
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Run prompt Evolution Strategy.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -558,8 +599,142 @@ def parse_args():
                              "generation_summary.csv, lineage.jsonl, manifest.json, "
                              "summary.json, and evaluation records.")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--no-plots", dest="plots", action="store_false",
+                        help="Skip the fitness/metric PNGs written when the run finishes "
+                             "(<run-dir>/plots/, or <history-csv-stem>_plots/ without --run-dir).")
 
-    return parser.parse_args()
+    # --- Search signal, diversity, and tones ---
+    parser.add_argument(
+        "--no-progress-tiebreak",
+        dest="progress_tiebreak",
+        action="store_false",
+        help="Disable the search-only attack-progress tie-breaker (ablation).",
+    )
+    parser.add_argument("--mutation-retry-limit", type=int, default=3,
+                        help="Extra mutation attempts when every attempt was a no-op or rejected.")
+    parser.add_argument(
+        "--evaluate-duplicate-offspring",
+        dest="skip_duplicate_offspring",
+        action="store_false",
+        help="Send exact-duplicate offspring to the model instead of skipping them.",
+    )
+    parser.add_argument("--max-survivors-per-seed", type=int, default=0,
+                        help="Cap on parents descending from one seed prompt; 0 disables.")
+    parser.add_argument("--parent-resample-k", type=int, default=0,
+                        help="Fresh filtered samples added to each surviving parent per generation.")
+    parser.add_argument("--max-samples-per-prompt", type=int, default=12,
+                        help="Upper bound on accumulated filtered samples per prompt.")
+    parser.add_argument("--tones", default=",".join(DEFAULT_MUTATION_STYLES),
+                        help=f"Comma-separated mutation tones. Allowed: {', '.join(sorted(ALLOWED_STYLES))}.")
+    parser.add_argument("--tone-adaptation", choices=["categorical", "cma_sign", "uniform"],
+                        default="categorical",
+                        help="How mutation tones are chosen and adapted across generations.")
+    parser.add_argument("--tone-learning-rate", type=float, default=0.2)
+    parser.add_argument("--tone-min-probability", type=float, default=0.02)
+    parser.add_argument("--filter-warmup-generations", type=int, default=0,
+                        help="No filter updates at or before this generation.")
+    parser.add_argument("--filter-min-positive-candidates", type=int, default=1,
+                        help="Distinct valid attack-positive prompts required to attempt a filter update.")
+
+    # --- Throughput and durability ---
+    parser.add_argument("--llm-concurrency", type=int, default=1,
+                        help="Parallel model requests (match the server's batch capacity).")
+    parser.add_argument("--checkpoint-every", type=int, default=0,
+                        help="Write run-dir/checkpoint.pkl every N generations (requires --run-dir).")
+    parser.add_argument("--resume", action="store_true",
+                        help="Continue from run-dir/checkpoint.pkl; --generations may be raised to extend a run.")
+    parser.add_argument("--population", choices=sorted(POPULATIONS), default=None,
+                        help="Population type: sets mu, lambda and the lineage cap (explicit flags win).")
+    parser.add_argument("--initial-population-nest", type=int, default=0,
+                        help="Draw this many seed prompts per random seed and take the first mu, so "
+                             "population sizes sharing a seed start from nested sets; 0 = draw exactly mu.")
+    parser.add_argument("--max-evaluations", type=int, default=0,
+                        help="Stop after this many attacker model calls (direct, filtered, resampled, "
+                             "re-evaluated); 0 uses --generations only.")
+    parser.add_argument("--filter-update-every-evaluations", type=int, default=0,
+                        help="Attempt a filter update every N attacker model calls (replaces --filter-update-every).")
+    parser.add_argument("--filter-warmup-evaluations", type=int, default=0,
+                        help="No filter updates before this many attacker model calls.")
+    parser.add_argument("--preset", choices=sorted(PRESETS), default=None,
+                        help="Apply recommended settings; flags given explicitly on the command line win.")
+
+    args = parser.parse_args(argv)
+    apply_preset(parser, args, argv)
+    return args
+
+
+# Recommended settings for long runs. Each value is only applied when the flag
+# was not given explicitly. See docs/scaling.md for the reasoning.
+PRESETS = {
+    # Budget-driven campaign: runs stop after max_evaluations attacker model
+    # calls; the generation count is an outcome, not a setting.
+    "full": {
+        "population": "medium",
+        "initial_population_nest": 32,
+        "max_evaluations": 60000,
+        "generations": 1_000_000,
+        "k_evals": 3,
+        "filtered_temperature": 0.7,
+        "final_k_evals": 16,
+        "parent_resample_k": 1,
+        "max_samples_per_prompt": 12,
+        "filter_update_every": 0,
+        "filter_update_every_evaluations": 4000,
+        "filter_warmup_evaluations": 8000,
+        "filter_min_positive_candidates": 3,
+        "top_k_filter": 8,
+        "llm_concurrency": 8,
+        "checkpoint_every": 5,
+    },
+    "smoke": {
+        "population": "small",
+        "max_evaluations": 800,
+        "generations": 1_000_000,
+        "k_evals": 2,
+        "filtered_temperature": 0.7,
+        "parent_resample_k": 1,
+        "filter_update_every": 0,
+        "filter_update_every_evaluations": 200,
+        "filter_warmup_evaluations": 200,
+        "llm_concurrency": 4,
+        "checkpoint_every": 2,
+    },
+}
+
+# Population types share the offspring ratio lambda/mu = 4 and cap one seed
+# lineage at a quarter of the parents, so only the population scale changes.
+POPULATIONS = {
+    "small": {"mu": 4, "lambda_": 16, "max_survivors_per_seed": 1},
+    "medium": {"mu": 16, "lambda_": 64, "max_survivors_per_seed": 4},
+    "large": {"mu": 32, "lambda_": 128, "max_survivors_per_seed": 8},
+}
+
+
+def _explicit_dests(parser, argv) -> set:
+    import sys
+
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    explicit = set()
+    for action in parser._actions:
+        for option in action.option_strings:
+            if any(token == option or token.startswith(option + "=") for token in tokens):
+                explicit.add(action.dest)
+    return explicit
+
+
+def apply_preset(parser, args, argv=None) -> None:
+    explicit = _explicit_dests(parser, argv)
+    if getattr(args, "preset", None):
+        for dest, value in PRESETS[args.preset].items():
+            if dest not in explicit:
+                setattr(args, dest, value)
+    if getattr(args, "population", None):
+        for dest, value in POPULATIONS[args.population].items():
+            if dest not in explicit:
+                setattr(args, dest, value)
+    if getattr(args, "max_evaluations", 0) and "generations" not in explicit:
+        # With a budget the generation count is only a safety cap.
+        args.generations = max(args.generations, 1_000_000)
 
 
 def _resolve_cli_k_evals(requested: Optional[int], dry_run: bool) -> int:
@@ -662,6 +837,61 @@ def evaluate_benign_holdout(
     }
 
 
+def _parse_tones(raw: str):
+    tones = tuple(item.strip() for item in str(raw or "").split(",") if item.strip())
+    if not tones:
+        raise SystemExit("--tones must name at least one tone")
+    unknown = [tone for tone in tones if tone not in ALLOWED_STYLES]
+    if unknown:
+        raise SystemExit(
+            f"Unknown tones {unknown}; allowed: {', '.join(sorted(ALLOWED_STYLES))}"
+        )
+    return tones
+
+
+# Settings that change what a generation means; a resumed run must keep them.
+_RESUME_LOCKED_FIELDS = (
+    "variant", "mu", "lambda_", "survival_schema", "selection_mode", "initial_population_nest",
+    "mr_objective", "k_evals", "filtered_temperature", "direct_temperature",
+    "mutation_styles", "random_seed", "csv_path", "lightweight",
+)
+
+
+def _load_resume_state(args, config: ESConfig):
+    if not getattr(args, "resume", False):
+        return None
+    if not args.run_dir:
+        raise SystemExit("--resume requires --run-dir")
+    checkpoint = Path(args.run_dir) / RunStream.CHECKPOINT
+    if not checkpoint.is_file():
+        raise SystemExit(f"No checkpoint to resume: {checkpoint}")
+    state = load_checkpoint(str(checkpoint))
+    saved = state.get("config", {})
+    mismatched = []
+    for name in _RESUME_LOCKED_FIELDS:
+        current = getattr(config, name)
+        previous = saved.get(name)
+        if isinstance(current, tuple):
+            current = list(current)
+        if isinstance(previous, tuple):
+            previous = list(previous)
+        if previous != current:
+            mismatched.append(f"{name}: checkpoint={previous!r} now={current!r}")
+    if mismatched:
+        raise SystemExit(
+            "Resume configuration differs from the checkpoint:\n  "
+            + "\n  ".join(mismatched)
+        )
+    completed = int(state["generation"])
+    if completed >= config.generations:
+        raise SystemExit(
+            f"Checkpoint already completed {completed} generations; "
+            "raise --generations to extend the run."
+        )
+    print(f">> Resuming from generation {completed} ({checkpoint})")
+    return state
+
+
 def main():
     args = parse_args()
     args.mr_objective = normalize_mr_objective(args.mr_objective)
@@ -720,7 +950,27 @@ def main():
         ),
         max_imperative_fragments=max(0, args.max_imperative_fragments),
         min_fluency=max(0.0, min(1.0, args.min_fluency)),
+        progress_tiebreak=bool(args.progress_tiebreak),
+        mutation_retry_limit=max(0, args.mutation_retry_limit),
+        skip_duplicate_offspring=bool(args.skip_duplicate_offspring),
+        max_survivors_per_seed=max(0, args.max_survivors_per_seed),
+        parent_resample_k=max(0, args.parent_resample_k),
+        max_samples_per_prompt=max(1, args.max_samples_per_prompt),
+        mutation_styles=_parse_tones(args.tones),
+        tone_adaptation=args.tone_adaptation,
+        tone_learning_rate=max(0.0, min(1.0, args.tone_learning_rate)),
+        tone_min_probability=max(0.0, args.tone_min_probability),
+        filter_warmup_generations=max(0, args.filter_warmup_generations),
+        filter_min_positive_candidates=max(1, args.filter_min_positive_candidates),
+        llm_concurrency=max(1, args.llm_concurrency),
+        max_evaluations=max(0, args.max_evaluations),
+        initial_population_nest=max(0, args.initial_population_nest),
+        filter_update_every_evaluations=max(0, args.filter_update_every_evaluations),
+        filter_warmup_evaluations=max(0, args.filter_warmup_evaluations),
+        stream_dir=args.run_dir,
+        checkpoint_every=max(0, args.checkpoint_every) if args.run_dir else 0,
     )
+    resume_state = _load_resume_state(args, config)
 
     initial_filter_prompt = _resolve_initial_filter_prompt(args)
 
@@ -729,6 +979,7 @@ def main():
         client=client,
         model_name=args.model,
         filter_prompt=initial_filter_prompt,
+        resume_state=resume_state,
     )
 
     final_reevaluation, final_reevaluation_samples = reevaluate_final_best(
@@ -751,6 +1002,7 @@ def main():
 
     write_history_csv(args.history_csv, result.history)
     write_run_dir(args.run_dir, args, config, result)
+    plot_paths = write_plots(args)
 
     print("\n=== ES RESULT ===")
     print(f"Runtime:              {result.runtime_sec:.2f}s")
@@ -806,6 +1058,8 @@ def main():
         print(f"History CSV:          {args.history_csv}")
     if args.run_dir:
         print(f"Run artifacts:        {args.run_dir}")
+    if plot_paths:
+        print(f"Plots:                {plot_paths[0].parent}")
 
 
 if __name__ == "__main__":

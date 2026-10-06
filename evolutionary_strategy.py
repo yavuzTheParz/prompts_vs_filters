@@ -21,7 +21,7 @@ import re
 import statistics
 import time
 import warnings
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -32,6 +32,7 @@ from mr_objective import (
     normalize_mr_objective,
 )
 from prompt_rendering import (
+    ALLOWED_STYLES,
     PromptValidationError,
     parse_internal_prompt,
     render_prompt,
@@ -41,6 +42,7 @@ from prompt_rendering import (
 from selection import selection_key, sort_population, validity_key
 from quality_constraints import (
     apply_quality_constraints,
+    clear_near_duplicate_marks,
     fluency_score,
     mark_near_duplicates,
     repetition_penalty,
@@ -48,6 +50,8 @@ from quality_constraints import (
 
 
 FitnessEvaluator = Callable[[List[Prompt]], None]
+
+DEFAULT_MUTATION_STYLES: Tuple[str, ...] = ("imperative", "plea")
 
 
 @dataclass
@@ -84,6 +88,9 @@ class ESConfig:
 
     style_selection: str = "random"
     mutation_styles: Tuple[str, ...] = ("imperative", "plea")
+    # "categorical" adapts a probability per tone (required for >2 tones);
+    # "cma_sign" keeps the legacy two-tone mapping from the CMA vector sign.
+    tone_adaptation: str = "categorical"
     structural_mutation_enabled: bool = True
     token_mutation_enabled: bool = True
     cma_step_size: float = 1.0
@@ -98,6 +105,37 @@ class ESConfig:
     max_imperative_fragments: int = 3
     min_fluency: float = 0.55
 
+    # Search-signal and diversity controls (see docs/scaling.md).
+    progress_tiebreak: bool = True
+    mutation_retry_limit: int = 3
+    skip_duplicate_offspring: bool = True
+    max_survivors_per_seed: int = 0
+    parent_resample_k: int = 0
+    max_samples_per_prompt: int = 12
+    tone_learning_rate: float = 0.2
+    tone_min_probability: float = 0.02
+    filter_warmup_generations: int = 0
+    filter_min_positive_candidates: int = 1
+    llm_concurrency: int = 1
+
+    # Fixed evaluation budget. One evaluation is one attacker-side model call
+    # (direct baseline, filtered sample, parent resample, or post-update
+    # re-evaluation). 0 keeps the generation count as the only stop criterion.
+    max_evaluations: int = 0
+    # Nested initial populations: draw this many seed prompts once per random
+    # seed and let every population size take a prefix, so runs that share a
+    # seed start from overlapping material and the seed is a valid statistical
+    # block across population sizes. 0 samples exactly mu prompts (legacy).
+    initial_population_nest: int = 0
+    # Filter schedule on the same clock as the budget, so population sizes that
+    # run different numbers of generations still face the same update cadence.
+    filter_update_every_evaluations: int = 0
+    filter_warmup_evaluations: int = 0
+
+    # Long-run durability.
+    stream_dir: Optional[str] = None
+    checkpoint_every: int = 0
+
 
 @dataclass
 class ESRunResult:
@@ -111,6 +149,10 @@ class ESRunResult:
     sample_records: List[Dict[str, Any]] = field(default_factory=list)
     lineage_records: List[Dict[str, Any]] = field(default_factory=list)
     benign_dataset: Dict[str, Any] = field(default_factory=dict)
+    samples_streamed: bool = False
+    attacker_calls: int = 0
+    defender_calls: int = 0
+    stop_reason: str = "generations"
 
 
 # ------------------------------------------------------------------
@@ -235,6 +277,7 @@ def _is_better(a: Prompt, b: Prompt, config: Optional[ESConfig] = None) -> bool:
 def _sort_best_first(population: List[Prompt], config: Optional[ESConfig] = None) -> List[Prompt]:
     mode = config.selection_mode if config else "scalar"
     mr_objective = config.mr_objective if config else BEHAVIORAL_DEVIATION
+    clear_near_duplicate_marks(population)
     ranked = sort_population(population, mode=mode, mr_objective=mr_objective)
     mark_near_duplicates(
         ranked,
@@ -348,6 +391,41 @@ def _sigma_from_cma_vector(vector: List[float], config: ESConfig) -> float:
     return max(config.sigma_min, min(config.sigma_max, sigma))
 
 
+def _initial_tone_probabilities(config: ESConfig) -> Dict[str, float]:
+    styles = tuple(config.mutation_styles or DEFAULT_MUTATION_STYLES)
+    return {style: 1.0 / len(styles) for style in styles}
+
+
+def _sample_tone(tone_probs: Dict[str, float]) -> str:
+    styles = list(tone_probs)
+    return random.choices(styles, weights=[tone_probs[s] for s in styles], k=1)[0]
+
+
+def _update_tone_probabilities(
+    tone_probs: Dict[str, float],
+    survivor_tones: Sequence[Optional[str]],
+    config: ESConfig,
+) -> Dict[str, float]:
+    """Cross-entropy style update of the categorical tone distribution.
+
+    A 2-D CMA vector can only express two tones by its sign, so tones are
+    adapted as a categorical distribution: probability moves toward the tones
+    of offspring that survived selection, with a floor so no tone disappears.
+    """
+    counted = [tone for tone in survivor_tones if tone in tone_probs]
+    if not counted:
+        return dict(tone_probs)
+    rate = max(0.0, min(1.0, float(config.tone_learning_rate)))
+    floor = max(0.0, min(1.0 / len(tone_probs), float(config.tone_min_probability)))
+    updated = {
+        tone: (1.0 - rate) * prob + rate * (counted.count(tone) / len(counted))
+        for tone, prob in tone_probs.items()
+    }
+    updated = {tone: max(floor, prob) for tone, prob in updated.items()}
+    total = sum(updated.values())
+    return {tone: prob / total for tone, prob in updated.items()}
+
+
 def _update_cma_distribution(
     selected_vectors: List[List[float]],
     previous_cov: List[List[float]],
@@ -373,6 +451,13 @@ def _update_cma_distribution(
     ]
 
 
+# Deterministic one-template-per-tone pool for dependency-free dry-runs.
+LIGHTWEIGHT_TONE_TEMPLATES: Dict[str, Tuple[str, str]] = {
+    "plea": ("Please,", ", please."),
+    "imperative": ("You must", ", immediately."),
+}
+
+
 def _lightweight_structural_mutate_text(text: str, style: Optional[str]) -> Tuple[str, str]:
     """Small mutation used only for dependency-free dry-runs."""
     before = text or ""
@@ -381,15 +466,12 @@ def _lightweight_structural_mutate_text(text: str, style: Optional[str]) -> Tupl
     except PromptValidationError as exc:
         return before, f"LW_INTERNAL_PROMPT_REJECT({exc})"
 
-    if style == "plea":
+    if style in LIGHTWEIGHT_TONE_TEMPLATES:
+        prefix, suffix = LIGHTWEIGHT_TONE_TEMPLATES[style]
+        tag = style.upper()
         choices = [
-            ("prefix", "Please,", "LW_PREFIX_PLEA"),
-            ("suffix", ", please.", "LW_SUFFIX_PLEA"),
-        ]
-    elif style == "imperative":
-        choices = [
-            ("prefix", "You must", "LW_PREFIX_IMPERATIVE"),
-            ("suffix", ", immediately.", "LW_SUFFIX_IMPERATIVE"),
+            ("prefix", prefix, f"LW_PREFIX_{tag}"),
+            ("suffix", suffix, f"LW_SUFFIX_{tag}"),
         ]
     else:
         candidate = replace(
@@ -501,7 +583,15 @@ def _mutate_prompt(
         config.sigma_max,
         config.max_mutations_per_child,
     )
-    for _ in range(reps):
+    # No-op or rejected mutations produce an exact copy of the parent, which
+    # costs a full LLM evaluation and is then discarded as a duplicate. Retry a
+    # bounded number of times until at least one operation is accepted.
+    max_attempts = reps + max(0, int(config.mutation_retry_limit))
+    attempts = 0
+    while attempts < max_attempts and (
+        attempts < reps or accepted_operations == 0
+    ):
+        attempts += 1
         before_rendered = render_prompt(child.internal_prompt)
         style = forced_style if forced_style is not None else choose_mutation_style(child.structure, config)
         if style is None:
@@ -683,6 +773,20 @@ def _evaluate_population(
     sample_records: Optional[List[Dict[str, Any]]] = None,
     filter_version: int = 0,
 ) -> None:
+    skipped = [p for p in population if p.metadata.get("skip_evaluation")]
+    population = [p for p in population if not p.metadata.get("skip_evaluation")]
+    for prompt in skipped:
+        # Exact duplicates of prompts already in the population are never sent
+        # to the model; they could only be discarded after evaluation.
+        prompt.fitness = 0.0
+        prompt.metrics = {
+            "valid": 0.0,
+            "validity_reason": "duplicate_offspring",
+            "search_progress": 0.0,
+        }
+        prompt.metadata["filter_version"] = int(filter_version)
+    if not population:
+        return
     unevaluated = [p for p in population if not p.output_prompts]
     if unevaluated:
         if lightweight:
@@ -742,6 +846,7 @@ def _evaluate_population(
                 max_sample_retries=config.max_sample_retries if config else 2,
                 generation=generation,
                 filter_version=filter_version,
+                concurrency=config.llm_concurrency if config else 1,
             )
             if sample_records is not None:
                 sample_records.extend(generated_records)
@@ -774,8 +879,81 @@ def _evaluate_population(
             config.max_seed_token_growth_ratio if config else 2.0
         ),
     )
+    use_progress = config.progress_tiebreak if config else True
     for prompt in population:
         prompt.metadata["filter_version"] = int(filter_version)
+        prompt.metrics["search_progress"] = (
+            _metric(prompt, "attack_progress")
+            if use_progress and _metric(prompt, "valid") > 0.0
+            else 0.0
+        )
+
+
+def _resample_parents(
+    parents: List[Prompt],
+    generation: int,
+    filter_prompt: str,
+    client,
+    model_name: str,
+    evaluator: FitnessEvaluator,
+    config: ESConfig,
+    sample_records: Optional[List[Dict[str, Any]]],
+    filter_version: int,
+) -> int:
+    """Add fresh filtered samples to surviving parents and rescore them.
+
+    With plus-survival and K=2..3, a parent whose few samples were lucky keeps
+    its inflated score forever and blocks the population. Accumulating samples
+    shrinks that noise until the parent's estimate is trustworthy.
+    """
+    if config.lightweight or config.parent_resample_k <= 0:
+        return 0
+    targets = []
+    for parent in parents:
+        if parent.metadata.get("skip_evaluation") or not parent.output_prompts:
+            continue
+        if int(parent.metadata.get("generation", 0) or 0) >= generation:
+            continue
+        current = len(parent.output_prompts)
+        target = min(
+            int(config.max_samples_per_prompt),
+            current + int(config.parent_resample_k),
+        )
+        if target > current:
+            parent.metadata["target_sample_count"] = target
+            targets.append(parent)
+    if not targets:
+        return 0
+    from run_llm import assign_outputs
+
+    records = assign_outputs(
+        filter_prompt,
+        targets,
+        client,
+        model_name=model_name,
+        k_evals=config.k_evals,
+        direct_temperature=config.direct_temperature,
+        filtered_temperature=config.filtered_temperature,
+        max_sample_retries=config.max_sample_retries,
+        generation=generation,
+        filter_version=filter_version,
+        concurrency=config.llm_concurrency,
+    )
+    if sample_records is not None:
+        sample_records.extend(records)
+    _evaluate_population(
+        parents,
+        filter_prompt,
+        client,
+        model_name,
+        evaluator,
+        False,
+        config=config,
+        generation=generation,
+        sample_records=sample_records,
+        filter_version=filter_version,
+    )
+    return len(targets)
 
 
 def _invalidate_for_filter_update(population: List[Prompt]) -> None:
@@ -784,6 +962,7 @@ def _invalidate_for_filter_update(population: List[Prompt]) -> None:
         prompt.metrics = {}
         prompt.fitness = 0.0
         for key in (
+            "target_sample_count",
             "api_error",
             "valid_llm_response",
             "attack_evaluations",
@@ -793,12 +972,39 @@ def _invalidate_for_filter_update(population: List[Prompt]) -> None:
             prompt.metadata.pop(key, None)
 
 
+def _select_top(candidates: List[Prompt], mu: int, config: ESConfig) -> List[Prompt]:
+    """Take the best mu, capping survivors that descend from one seed prompt.
+
+    Without a cap one lucky lineage fills every slot within a few generations
+    (population diversity fell from 0.93 to 0.15 in the 80-generation runs), and
+    the search can no longer escape once the filter learns that lineage.
+    Unfilled slots fall back to the best remaining candidates.
+    """
+    ranked = _sort_best_first(candidates, config)
+    cap = int(config.max_survivors_per_seed or 0)
+    if cap <= 0:
+        return ranked[:mu]
+    selected: List[Prompt] = []
+    overflow: List[Prompt] = []
+    per_seed: Dict[str, int] = {}
+    for prompt in ranked:
+        seed_id = str(prompt.metadata.get("seed_prompt_id") or id(prompt))
+        if per_seed.get(seed_id, 0) < cap:
+            selected.append(prompt)
+            per_seed[seed_id] = per_seed.get(seed_id, 0) + 1
+        else:
+            overflow.append(prompt)
+        if len(selected) == mu:
+            return selected
+    return selected + overflow[: mu - len(selected)]
+
+
 def _survival_plus(parents: List[Prompt], offspring: List[Prompt], mu: int, config: ESConfig) -> List[Prompt]:
-    return _sort_best_first(parents + offspring, config)[:mu]
+    return _select_top(parents + offspring, mu, config)
 
 
 def _survival_comma(offspring: List[Prompt], mu: int, config: ESConfig) -> List[Prompt]:
-    return _sort_best_first(offspring, config)[:mu]
+    return _select_top(offspring, mu, config)
 
 
 def _select_cma_survivors(
@@ -809,7 +1015,7 @@ def _select_cma_survivors(
     survival_mode: str,
 ) -> Tuple[List[Prompt], List[List[float]], List[float]]:
     candidates = offspring if survival_mode == "comma" else parents + offspring
-    selected = _sort_best_first(candidates, config)[:mu]
+    selected = _select_top(candidates, mu, config)
     vectors = [
         list((prompt.metadata or {}).get("cma_vector", [0.0, 0.0]))
         for prompt in selected
@@ -841,6 +1047,9 @@ def _history_metrics(
 ) -> Dict[str, Any]:
     mean_parent_fitness = sum(p.fitness for p in parents) / len(parents)
     rejection_counts: Dict[str, int] = {}
+    seed_lineages = {
+        str((prompt.metadata or {}).get("seed_prompt_id") or "") for prompt in parents
+    }
     for prompt in parents:
         reason = str((prompt.metrics or {}).get("validity_reason", "valid"))
         if reason != "valid":
@@ -882,6 +1091,7 @@ def _history_metrics(
         "best_asv_std": _metric(best, "asv_std"),
         "best_mr_std": _metric(best, "mr_std"),
         "best_sample_count": _metric(best, "sample_count"),
+        "best_attack_progress": _metric(best, "attack_progress"),
         "best_compliant_count": _metric(best, "compliant_count"),
         "best_ambiguous_count": _metric(best, "ambiguous_count"),
         "best_refusal_count": _metric(best, "refusal_count"),
@@ -934,9 +1144,14 @@ def _history_metrics(
         "rejected_grammar_artifacts": float(
             rejection_counts.get("grammar_artifacts", 0)
         ),
+        "rejected_duplicate_offspring": float(
+            rejection_counts.get("duplicate_offspring", 0)
+        ),
+        "parent_seed_lineages": float(len(seed_lineages)),
     }
     metric_names = (
         "fitness",
+        "attack_progress",
         "attack_objective",
         "attack_compliance_score",
         "attack_success",
@@ -1071,7 +1286,14 @@ def _maybe_evolve_filter(
     ranked_population: List[Prompt],
     client,
     model_name: str,
+    due: Optional[bool] = None,
 ) -> Tuple[str, Dict[str, float], Optional[Dict[str, Any]]]:
+    """Attempt a filter update.
+
+    `due=None` uses the generation schedule (`filter_update_every`,
+    `filter_warmup_generations`); a boolean overrides it with the caller's
+    evaluation-based schedule.
+    """
     base_metrics = {
         "filter_attempted": 0.0,
         "filter_changed": 0.0,
@@ -1089,7 +1311,15 @@ def _maybe_evolve_filter(
         "filter_trigger_best_fitness": 0.0,
         "filter_trigger_best_attack_success": 0.0,
     }
-    if config.filter_update_every <= 0 or generation % config.filter_update_every != 0:
+    if due is None:
+        if config.filter_update_every <= 0 or generation % config.filter_update_every != 0:
+            return filter_prompt, base_metrics, None
+        # Updating the filter before prompts have had time to adapt shuts the
+        # search down in its first generations (main_v18 lost all attack signal
+        # at gen 5).
+        if generation <= int(config.filter_warmup_generations or 0):
+            return filter_prompt, base_metrics, None
+    elif not due:
         return filter_prompt, base_metrics, None
 
     from filter_evolution import evolve_filter, report_to_dict
@@ -1123,22 +1353,29 @@ def _maybe_evolve_filter(
         }
         return old_filter, base_metrics, event
 
+    # Invalid prompts (duplicates, garbled, over-length) never train the filter.
     attack_candidates = [
         (idx, p) for idx, p in enumerate(ranked_population)
-        if max(
+        if validity_key(p) > 0.0
+        and max(
             _metric(p, "attack_compliance_score"),
             _metric(p, "attack_objective"),
             _metric(p, "asv"),
         ) > 0.0
     ]
-    if not attack_candidates:
+    min_positive = max(1, int(config.filter_min_positive_candidates or 1))
+    if len(_dedupe_filter_attack_candidates(attack_candidates)) < min_positive:
         event: Dict[str, Any] = {
             "generation": generation,
             "attempted": True,
             "filter_changed": False,
             "accepted_by_filter_evaluator": False,
             "accepted_after_length_check": False,
-            "rejection_reason": "no_positive_attack_candidates",
+            "rejection_reason": (
+                "insufficient_positive_attack_candidates"
+                if attack_candidates
+                else "no_positive_attack_candidates"
+            ),
             "top_k_filter": top_k,
             "max_filter_chars": int(config.max_filter_chars),
             "top_attack_prompts": [],
@@ -1164,7 +1401,7 @@ def _maybe_evolve_filter(
             "filter_new_attack_refusal_rate": 0.0,
             "filter_old_benign_refusal_rate": 0.0,
             "filter_new_benign_refusal_rate": 0.0,
-            "filter_positive_candidate_count": 0.0,
+            "filter_positive_candidate_count": float(len(attack_candidates)),
             "filter_unique_candidate_count": 0.0,
             "filter_duplicate_candidate_count": 0.0,
             "filter_trigger_best_attack_objective": 0.0,
@@ -1206,6 +1443,7 @@ def _maybe_evolve_filter(
         client=client,
         model_name=model_name,
         return_report=True,
+        concurrency=config.llm_concurrency,
     )
     report_data = report_to_dict(report)
     proposed_rule = str(report_data.get("proposed_rule", "") or "")
@@ -1282,6 +1520,154 @@ def _maybe_evolve_filter(
     return candidate, metrics, event
 
 
+def _rendered_or_raw(prompt: Prompt) -> str:
+    try:
+        return render_prompt(prompt.internal_prompt)
+    except (PromptValidationError, TypeError, ValueError):
+        return prompt.input_prompt or ""
+
+
+def _offspring_statistics(
+    offspring: List[Prompt],
+    tone_probs: Dict[str, float],
+) -> Dict[str, float]:
+    """Per-generation search throughput, independent of elitist survivors.
+
+    Parent-population metrics plateau under plus-survival even while the search
+    is stuck; offspring metrics show whether new candidates are still improving.
+    """
+    evaluated = [p for p in offspring if not p.metadata.get("skip_evaluation")]
+    valid = [p for p in evaluated if validity_key(p) > 0.0]
+    row: Dict[str, float] = {
+        "offspring_evaluated": float(len(evaluated)),
+        "offspring_skipped_duplicates": float(len(offspring) - len(evaluated)),
+        "offspring_valid_rate": len(valid) / len(evaluated) if evaluated else 0.0,
+        "offspring_attack_success_rate": (
+            sum(_metric(p, "attack_success") > 0.0 for p in valid) / len(valid)
+            if valid
+            else 0.0
+        ),
+        "offspring_mean_fitness": (
+            sum(float(p.fitness) for p in valid) / len(valid) if valid else 0.0
+        ),
+        "offspring_max_fitness": max((float(p.fitness) for p in valid), default=0.0),
+        "offspring_mean_attack_progress": (
+            sum(_metric(p, "attack_progress") for p in valid) / len(valid)
+            if valid
+            else 0.0
+        ),
+        "offspring_max_attack_progress": max(
+            (_metric(p, "attack_progress") for p in valid), default=0.0
+        ),
+    }
+    for tone in tone_probs:
+        tone_children = [p for p in valid if p.metadata.get("mutation_tone") == tone]
+        row[f"tone_offspring_{tone}"] = float(len(tone_children))
+        row[f"tone_success_{tone}"] = float(
+            sum(_metric(p, "attack_success") > 0.0 for p in tone_children)
+        )
+    return row
+
+
+CHECKPOINT_VERSION = 2
+
+
+class CallCountingClient:
+    """Counts model calls made through `generate`; everything else is forwarded."""
+
+    def __init__(self, client):
+        import threading
+
+        self._client = client
+        self._lock = threading.Lock()
+        self.calls = 0
+
+    def generate(self, *args, **kwargs):
+        with self._lock:
+            self.calls += 1
+        return self._client.generate(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+
+class RunStream:
+    """Append-only run artifacts plus atomic checkpoints for long runs.
+
+    A multi-day run must not keep every sample in memory or lose everything on
+    a crash: samples, history rows, and filter events are appended as each
+    generation completes, and `checkpoint.pkl` holds the full search state.
+    """
+
+    SAMPLES = "samples.jsonl"
+    HISTORY = "history.jsonl"
+    FILTER_EVENTS = "filter_events.stream.jsonl"
+    CHECKPOINT = "checkpoint.pkl"
+
+    def __init__(self, directory: str):
+        self.root = Path(directory)
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def reset(self) -> None:
+        for name in (self.SAMPLES, self.HISTORY, self.FILTER_EVENTS):
+            (self.root / name).write_text("", encoding="utf-8")
+        # A fresh run must never be resumed from an older run's state.
+        (self.root / self.CHECKPOINT).unlink(missing_ok=True)
+
+    def _append(self, name: str, rows: Sequence[Dict[str, Any]]) -> None:
+        if not rows:
+            return
+        with (self.root / name).open("a", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+            handle.flush()
+
+    def write_samples(self, rows: Sequence[Dict[str, Any]]) -> None:
+        self._append(self.SAMPLES, rows)
+
+    def write_history(self, row: Dict[str, Any]) -> None:
+        self._append(self.HISTORY, [row])
+
+    def write_filter_event(self, event: Dict[str, Any]) -> None:
+        self._append(self.FILTER_EVENTS, [event])
+
+    def truncate_to_generation(self, generation: int) -> None:
+        """Drop rows written after the checkpoint so a resume does not duplicate them."""
+        for name in (self.SAMPLES, self.HISTORY, self.FILTER_EVENTS):
+            path = self.root / name
+            if not path.exists():
+                continue
+            kept = []
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if float(row.get("generation", 0) or 0) <= generation:
+                    kept.append(line)
+            path.write_text("".join(item + "\n" for item in kept), encoding="utf-8")
+
+    def write_checkpoint(self, state: Dict[str, Any]) -> None:
+        import pickle
+
+        target = self.root / self.CHECKPOINT
+        temporary = target.with_suffix(".pkl.tmp")
+        with temporary.open("wb") as handle:
+            pickle.dump(state, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        temporary.replace(target)
+
+
+def load_checkpoint(path: str) -> Dict[str, Any]:
+    import pickle
+
+    with Path(path).open("rb") as handle:
+        state = pickle.load(handle)
+    if state.get("checkpoint_version") != CHECKPOINT_VERSION:
+        raise ValueError(
+            f"Unsupported checkpoint version: {state.get('checkpoint_version')}"
+        )
+    return state
+
+
 def _load_heavy_mutation_objects():
     from mutation_manager import StyleManager, TemplateManager
 
@@ -1318,6 +1704,7 @@ def evolutionary_strategy_run(
     ),
     initial_population: Optional[List[Prompt]] = None,
     evaluator: Optional[FitnessEvaluator] = None,
+    resume_state: Optional[Dict[str, Any]] = None,
 ) -> ESRunResult:
     if config.random_seed is not None:
         random.seed(config.random_seed)
@@ -1363,6 +1750,16 @@ def evolutionary_strategy_run(
     )
     config.mr_objective = normalize_mr_objective(config.mr_objective)
     benign_provenance = benign_dataset_provenance(config.benign_csv_path)
+    config.max_evaluations = max(0, int(config.max_evaluations or 0))
+    config.filter_update_every_evaluations = max(
+        0, int(config.filter_update_every_evaluations or 0)
+    )
+    config.filter_warmup_evaluations = max(0, int(config.filter_warmup_evaluations or 0))
+    if config.filter_update_every > 0 and config.filter_update_every_evaluations > 0:
+        raise ValueError(
+            "Use either filter_update_every (generations) or "
+            "filter_update_every_evaluations, not both"
+        )
 
     if config.lightweight:
         template_manager = style_manager = tokenizer = bert_model = None
@@ -1381,102 +1778,187 @@ def evolutionary_strategy_run(
                 mr_objective=config.mr_objective,
             )
 
-    source_population = initial_population or load_prompt_population(config.csv_path)
-    if len(source_population) < config.mu:
-        raise ValueError(f"Initial population must contain at least mu={config.mu} prompts")
+    styles = tuple(config.mutation_styles or DEFAULT_MUTATION_STYLES)
+    unknown_styles = [style for style in styles if style not in ALLOWED_STYLES]
+    if unknown_styles:
+        raise ValueError(f"Unknown mutation styles: {unknown_styles}")
+    config.mutation_styles = styles
+    config.tone_adaptation = (config.tone_adaptation or "categorical").strip().lower()
+    if config.tone_adaptation not in {"categorical", "cma_sign", "uniform"}:
+        raise ValueError("tone_adaptation must be 'categorical', 'cma_sign', or 'uniform'")
+    if config.tone_adaptation == "cma_sign" and len(styles) > 2:
+        raise ValueError("tone_adaptation='cma_sign' supports at most two styles")
+    stream = RunStream(config.stream_dir) if config.stream_dir else None
 
-    parents = random.sample(source_population, config.mu)
-    parents = [_clone_prompt(p, keep_outputs=False) for p in parents]
-    lineage_records: List[Dict[str, Any]] = []
-    for index, parent in enumerate(parents):
-        prompt_id = _stable_prompt_id(config.random_seed, 0, index, parent.input_prompt)
-        seed_body = parent.internal_prompt.body
-        parent.metadata.update(
-            {
-                "prompt_id": prompt_id,
-                "parent_id": None,
-                "seed_prompt_id": prompt_id,
-                "generation": 0,
-                "mutation_lineage": [],
-                "seed_body": seed_body,
-                "seed_body_chars": len(seed_body),
-                "seed_body_tokens": len(seed_body.split()),
-                "mutation_attempts_since_seed": 0,
-                "mutation_count_since_seed": 0,
-                "rejected_mutations_since_seed": 0,
-                "no_op_mutations_since_seed": 0,
-                "consecutive_rejected_mutations": 0,
-            }
-        )
-        lineage_records.append(
-            {
-                "prompt_id": prompt_id,
-                "parent_id": None,
-                "seed_prompt_id": prompt_id,
-                "generation": 0,
-                "mutation_operator": "seed",
-                "mutation_count_since_seed": 0,
-                "consecutive_rejected_mutations": 0,
-            }
-        )
-
-    start = time.time()
     sample_records: List[Dict[str, Any]] = []
-    _evaluate_population(
-        parents,
-        filter_prompt,
-        client,
-        model_name,
-        evaluator,
-        config.lightweight,
-        config=config,
-        generation=0,
-        sample_records=sample_records,
-        filter_version=0,
-    )
-    parents = _sort_best_first(parents, config)
-    if variant == "cma_es":
-        for parent in parents:
-            parent.metadata["cma_vector"] = [0.0, 0.0]
-            parent.metadata["cma_style"] = "initial"
-            parent.metadata["cma_sigma"] = float(config.sigma)
-    best = _clone_prompt(parents[0], keep_outputs=True)
+    start = time.time()
+    if resume_state is None:
+        source_population = initial_population or load_prompt_population(config.csv_path)
+        if len(source_population) < config.mu:
+            raise ValueError(f"Initial population must contain at least mu={config.mu} prompts")
 
-    parent_sigmas = [float(config.sigma)] * config.mu
-    cma_mean = [0.0, 0.0]
-    cma_cov = [[1.0, 0.0], [0.0, 1.0]]
-    history: List[Dict[str, Any]] = []
-    filter_events: List[Dict[str, Any]] = []
-    filter_versions: List[Dict[str, Any]] = [
-        {
-            "version": 0,
-            "generation": 0,
-            "reason": "initial",
-            "filter_length": len(filter_prompt),
-            "filter_prompt": filter_prompt,
-        }
-    ]
-    sigma_global = float(config.sigma)
-    current_filter_version = 0
-    stagnation_counter = 0
-    restart_count = 0
+        nest = max(config.mu, int(config.initial_population_nest or 0))
+        if len(source_population) < nest:
+            raise ValueError(
+                f"Initial population must contain at least {nest} prompts for the nested draw"
+            )
+        # The draw size does not depend on mu, so the random stream after
+        # initialisation is also identical across population sizes.
+        parents = random.sample(source_population, nest)[: config.mu]
+        parents = [_clone_prompt(p, keep_outputs=False) for p in parents]
+        lineage_records: List[Dict[str, Any]] = []
+        for index, parent in enumerate(parents):
+            prompt_id = _stable_prompt_id(config.random_seed, 0, index, parent.input_prompt)
+            seed_body = parent.internal_prompt.body
+            parent.metadata.update(
+                {
+                    "prompt_id": prompt_id,
+                    "parent_id": None,
+                    "seed_prompt_id": prompt_id,
+                    "generation": 0,
+                    "mutation_lineage": [],
+                    "seed_body": seed_body,
+                    "seed_body_chars": len(seed_body),
+                    "seed_body_tokens": len(seed_body.split()),
+                    "mutation_attempts_since_seed": 0,
+                    "mutation_count_since_seed": 0,
+                    "rejected_mutations_since_seed": 0,
+                    "no_op_mutations_since_seed": 0,
+                    "consecutive_rejected_mutations": 0,
+                }
+            )
+            lineage_records.append(
+                {
+                    "prompt_id": prompt_id,
+                    "parent_id": None,
+                    "seed_prompt_id": prompt_id,
+                    "generation": 0,
+                    "mutation_operator": "seed",
+                    "mutation_count_since_seed": 0,
+                    "consecutive_rejected_mutations": 0,
+                }
+            )
 
-    for generation in range(1, config.generations + 1):
+        _evaluate_population(
+            parents,
+            filter_prompt,
+            client,
+            model_name,
+            evaluator,
+            config.lightweight,
+            config=config,
+            generation=0,
+            sample_records=sample_records,
+            filter_version=0,
+        )
+        parents = _sort_best_first(parents, config)
+        if variant == "cma_es":
+            for parent in parents:
+                parent.metadata["cma_vector"] = [0.0, 0.0]
+                parent.metadata["cma_style"] = "initial"
+                parent.metadata["cma_sigma"] = float(config.sigma)
+        best = _clone_prompt(parents[0], keep_outputs=True)
+
+        parent_sigmas = [float(config.sigma)] * config.mu
+        cma_mean = [0.0, 0.0]
+        cma_cov = [[1.0, 0.0], [0.0, 1.0]]
+        history: List[Dict[str, Any]] = []
+        filter_events: List[Dict[str, Any]] = []
+        filter_versions: List[Dict[str, Any]] = [
+            {
+                "version": 0,
+                "generation": 0,
+                "reason": "initial",
+                "filter_length": len(filter_prompt),
+                "filter_prompt": filter_prompt,
+            }
+        ]
+        sigma_global = float(config.sigma)
+        current_filter_version = 0
+        stagnation_counter = 0
+        restart_count = 0
+        tone_probs = _initial_tone_probabilities(config)
+        best_ever_fitness = float(best.fitness)
+        best_ever_generation = 0
+        runtime_offset = 0.0
+        start_generation = 1
+        attacker_calls = len(sample_records)
+        defender_calls = 0
+        next_filter_mark = (
+            config.filter_warmup_evaluations + config.filter_update_every_evaluations
+            if config.filter_update_every_evaluations > 0
+            else 0
+        )
+        if stream is not None:
+            stream.reset()
+            stream.write_samples(sample_records)
+            sample_records = []
+    else:
+        state = resume_state
+        parents = state["parents"]
+        best = state["best"]
+        lineage_records = state["lineage_records"]
+        parent_sigmas = state["parent_sigmas"]
+        cma_mean = state["cma_mean"]
+        cma_cov = state["cma_cov"]
+        history = state["history"]
+        filter_events = state["filter_events"]
+        filter_versions = state["filter_versions"]
+        filter_prompt = state["filter_prompt"]
+        sigma_global = state["sigma_global"]
+        current_filter_version = state["current_filter_version"]
+        stagnation_counter = state["stagnation_counter"]
+        restart_count = state["restart_count"]
+        tone_probs = state["tone_probs"]
+        best_ever_fitness = state["best_ever_fitness"]
+        best_ever_generation = state["best_ever_generation"]
+        sample_records = state.get("sample_records", [])
+        runtime_offset = float(state.get("runtime_sec", 0.0))
+        start_generation = int(state["generation"]) + 1
+        attacker_calls = int(state.get("attacker_calls", 0))
+        defender_calls = int(state.get("defender_calls", 0))
+        next_filter_mark = int(state.get("next_filter_mark", 0))
+        random.setstate(state["random_state"])
+        if stream is not None:
+            stream.truncate_to_generation(int(state["generation"]))
+
+    stop_reason = "generations"
+    child_cost = 1 + max(1, int(config.k_evals or 1))
+    for generation in range(start_generation, config.generations + 1):
+        generation_lambda = config.lambda_
+        if config.max_evaluations > 0:
+            remaining = config.max_evaluations - attacker_calls
+            affordable = remaining // child_cost
+            minimum = config.mu if survival_mode == "comma" else 1
+            if affordable < minimum:
+                stop_reason = "evaluation_budget"
+                break
+            # The last generation is shortened so the budget is not exceeded
+            # by more than sample retries.
+            generation_lambda = min(config.lambda_, affordable)
+        generation_start = time.time()
         offspring: List[Prompt] = []
         offspring_parent_indices: List[int] = []
         offspring_sigmas: List[float] = []
         offspring_cma_vectors: List[List[float]] = []
         operator_attempts = operator_acceptances = operator_fallbacks = 0
         operator_rejections = operator_noops = 0
+        seen_texts = {_rendered_or_raw(p) for p in parents}
+        sample_count_before = len(sample_records)
 
         if variant == "self_adaptive":
             dim = 1.0
             tau = 1.0 / math.sqrt(2.0 * math.sqrt(dim))
             tau_prime = 1.0 / math.sqrt(2.0 * dim)
 
-        for _ in range(config.lambda_):
+        for _ in range(generation_lambda):
             parent_idx = random.randrange(len(parents))
             parent = parents[parent_idx]
+            tone = (
+                _sample_tone(tone_probs)
+                if config.tone_adaptation == "categorical"
+                else None
+            )
 
             if variant == "cma_es":
                 cma_vector = _sample_cma_vector(
@@ -1486,7 +1968,11 @@ def evolutionary_strategy_run(
                     config.cma_cov_reg,
                 )
                 sigma_child = _sigma_from_cma_vector(cma_vector, config)
-                style_child = _style_from_cma_vector(cma_vector, config)
+                style_child = (
+                    _style_from_cma_vector(cma_vector, config)
+                    if config.tone_adaptation == "cma_sign"
+                    else tone
+                )
                 child, _logs = _mutate_prompt(
                     parent,
                     sigma_child,
@@ -1502,6 +1988,7 @@ def evolutionary_strategy_run(
                 child.metadata["cma_sigma"] = sigma_child
                 offspring_sigmas.append(sigma_child)
                 offspring_cma_vectors.append(cma_vector)
+                tone = style_child
 
             elif variant == "self_adaptive":
                 inherited_sigma = parent_sigmas[parent_idx]
@@ -1512,12 +1999,14 @@ def evolutionary_strategy_run(
                 child, _logs = _mutate_prompt(
                     parent, sigma_child, config,
                     template_manager, style_manager, tokenizer, bert_model,
+                    forced_style=tone,
                 )
                 offspring_sigmas.append(sigma_child)
             else:
                 child, _logs = _mutate_prompt(
                     parent, sigma_global, config,
                     template_manager, style_manager, tokenizer, bert_model,
+                    forced_style=tone,
                 )
 
             child_id = _stable_prompt_id(
@@ -1533,6 +2022,7 @@ def evolutionary_strategy_run(
                     "parent_id": parent_id,
                     "seed_prompt_id": parent.metadata.get("seed_prompt_id", parent_id),
                     "generation": generation,
+                    "mutation_tone": tone,
                     "mutation_operator": list(_logs),
                     "mutation_lineage": list(
                         parent.metadata.get("mutation_lineage", [])
@@ -1540,12 +2030,19 @@ def evolutionary_strategy_run(
                     + list(_logs),
                 }
             )
+            child.metadata.pop("skip_evaluation", None)
+            child.metadata.pop("target_sample_count", None)
+            rendered_child = _rendered_or_raw(child)
+            if config.skip_duplicate_offspring and rendered_child in seen_texts:
+                child.metadata["skip_evaluation"] = True
+            seen_texts.add(rendered_child)
             lineage_records.append(
                 {
                     "prompt_id": child_id,
                     "parent_id": parent_id,
                     "seed_prompt_id": child.metadata["seed_prompt_id"],
                     "generation": generation,
+                    "mutation_tone": tone,
                     "mutation_operator": list(_logs),
                     "mutation_count_since_seed": int(
                         child.metadata.get("mutation_count_since_seed", 0)
@@ -1583,6 +2080,7 @@ def evolutionary_strategy_run(
             sample_records=sample_records,
             filter_version=current_filter_version,
         )
+        offspring_stats = _offspring_statistics(offspring, tone_probs)
 
         successes = sum(
             1 for child, p_idx in zip(offspring, offspring_parent_indices)
@@ -1623,22 +2121,54 @@ def evolutionary_strategy_run(
             if survival_mode == "plus":
                 combined = list(zip(parents + offspring, parent_sigmas + offspring_sigmas))
                 sigma_by_id = {id(prompt): sigma for prompt, sigma in combined}
-                selected_prompts = _sort_best_first([p for p, _ in combined], config)[: config.mu]
+                selected_prompts = _select_top([p for p, _ in combined], config.mu, config)
                 selected = [(p, sigma_by_id[id(p)]) for p in selected_prompts]
             else:
                 combined = list(zip(offspring, offspring_sigmas))
                 sigma_by_id = {id(prompt): sigma for prompt, sigma in combined}
-                selected_prompts = _sort_best_first([p for p, _ in combined], config)[: config.mu]
+                selected_prompts = _select_top([p for p, _ in combined], config.mu, config)
                 selected = [(p, sigma_by_id[id(p)]) for p in selected_prompts]
 
             parents = [item[0] for item in selected]
             parent_sigmas = [item[1] for item in selected]
+
+        survivor_tones = [
+            prompt.metadata.get("mutation_tone")
+            for prompt in parents
+            if int(prompt.metadata.get("generation", -1)) == generation
+            and validity_key(prompt) > 0.0
+        ]
+        if config.tone_adaptation == "categorical":
+            tone_probs = _update_tone_probabilities(tone_probs, survivor_tones, config)
+
+        spent_so_far = attacker_calls + len(sample_records) - sample_count_before
+        resample_affordable = (
+            config.max_evaluations <= 0
+            or spent_so_far + len(parents) * config.parent_resample_k
+            <= config.max_evaluations
+        )
+        resampled_parents = 0 if not resample_affordable else _resample_parents(
+            parents,
+            generation,
+            filter_prompt,
+            client,
+            model_name,
+            evaluator,
+            config,
+            sample_records,
+            current_filter_version,
+        )
+        if resampled_parents:
+            parents = _sort_best_first(parents, config)
 
         ranked_population = _sort_best_first(parents + offspring, config)
         current_best = ranked_population[0]
         improved = _is_better(current_best, best, config)
         if improved:
             best = _clone_prompt(current_best, keep_outputs=True)
+        if validity_key(current_best) > 0.0 and current_best.fitness > best_ever_fitness:
+            best_ever_fitness = float(current_best.fitness)
+            best_ever_generation = generation
         stagnation_counter, stagnation_detected, restart_triggered = (
             _stagnation_step(stagnation_counter, improved, config)
         )
@@ -1648,6 +2178,7 @@ def evolutionary_strategy_run(
             parent_sigmas = [float(config.sigma)] * len(parents)
             cma_mean = [0.0, 0.0]
             cma_cov = [[1.0, 0.0], [0.0, 1.0]]
+            tone_probs = _initial_tone_probabilities(config)
             if variant == "cma_es":
                 for parent in parents:
                     parent.metadata["cma_vector"] = [0.0, 0.0]
@@ -1655,9 +2186,22 @@ def evolutionary_strategy_run(
                     parent.metadata["cma_sigma"] = float(config.sigma)
 
         sigma_report = sigma_global if variant == "one_fifth" else sum(parent_sigmas) / len(parent_sigmas)
-        filter_prompt, filter_metrics, filter_event = _maybe_evolve_filter(
-            generation, config, filter_prompt, ranked_population, client, model_name,
+        filter_due = None
+        if config.filter_update_every_evaluations > 0:
+            spent_so_far = attacker_calls + len(sample_records) - sample_count_before
+            filter_due = spent_so_far >= next_filter_mark
+            if filter_due:
+                while next_filter_mark <= spent_so_far:
+                    next_filter_mark += config.filter_update_every_evaluations
+        counting_client = (
+            CallCountingClient(client) if client is not None and hasattr(client, "generate") else client
         )
+        filter_prompt, filter_metrics, filter_event = _maybe_evolve_filter(
+            generation, config, filter_prompt, ranked_population, counting_client, model_name,
+            due=filter_due,
+        )
+        if isinstance(counting_client, CallCountingClient):
+            defender_calls += counting_client.calls
         if filter_event is not None:
             filter_events.append(filter_event)
             if filter_event.get("filter_changed"):
@@ -1711,8 +2255,24 @@ def evolutionary_strategy_run(
                     1.0 if restart_triggered else 0.0
                 ),
                 "restart_count": float(restart_count),
+                "best_ever_fitness": float(best_ever_fitness),
+                "best_ever_generation": float(best_ever_generation),
+                "filter_version": float(current_filter_version),
+                "resampled_parents": float(resampled_parents),
+                "generation_seconds": float(time.time() - generation_start),
+                "generation_sample_attempts": float(
+                    len(sample_records) - sample_count_before
+                ),
+                "generation_lambda": float(generation_lambda),
+                "attacker_calls": float(
+                    attacker_calls + len(sample_records) - sample_count_before
+                ),
+                "defender_calls": float(defender_calls),
+                **offspring_stats,
             }
         )
+        for tone_name, probability in tone_probs.items():
+            history_row[f"tone_prob_{tone_name}"] = float(probability)
         if variant == "cma_es":
             history_row.update(
                 {
@@ -1725,6 +2285,18 @@ def evolutionary_strategy_run(
             )
         history_row.update(filter_metrics)
         history.append(history_row)
+        attacker_calls = int(history_row["attacker_calls"])
+        budget_spent = (
+            config.max_evaluations > 0
+            and config.max_evaluations - attacker_calls < child_cost
+        )
+
+        if stream is not None:
+            stream.write_samples(sample_records)
+            sample_records = []
+            stream.write_history(history_row)
+            if filter_event is not None:
+                stream.write_filter_event(filter_event)
 
         if config.verbose:
             bd = _metric(best, "behavioral_deviation")
@@ -1732,12 +2304,53 @@ def evolutionary_strategy_run(
             print(
                 f"[ES:{variant}] gen={generation} fitness={best.fitness:.4f} "
                 f"ASV={_metric(best,'asv'):.4f} MR={_metric(best,'mr'):.4f} "
-                f"BD(1-MR)={bd:.4f} fluency={_metric(best,'fluency'):.3f} "
-                f"garbled={_metric(best,'garbled_token_ratio'):.3f} "
-                f"validity={validity} ps={success_rate:.3f} sigma={sigma_report:.3f}"
+                f"BD(1-MR)={bd:.4f} progress={_metric(best,'attack_progress'):.3f} "
+                f"fluency={_metric(best,'fluency'):.3f} "
+                f"validity={validity} ps={success_rate:.3f} sigma={sigma_report:.3f} "
+                f"lineages={int(history_row['parent_seed_lineages'])} "
+                f"t={history_row['generation_seconds']:.1f}s"
+            )
+
+        if stream is not None and config.checkpoint_every > 0 and (
+            generation % config.checkpoint_every == 0
+            or generation == config.generations
+            or budget_spent
+        ):
+            stream.write_checkpoint(
+                {
+                    "checkpoint_version": CHECKPOINT_VERSION,
+                    "generation": generation,
+                    "parents": parents,
+                    "best": best,
+                    "lineage_records": lineage_records,
+                    "parent_sigmas": parent_sigmas,
+                    "cma_mean": cma_mean,
+                    "cma_cov": cma_cov,
+                    "history": history,
+                    "filter_events": filter_events,
+                    "filter_versions": filter_versions,
+                    "filter_prompt": filter_prompt,
+                    "sigma_global": sigma_global,
+                    "current_filter_version": current_filter_version,
+                    "stagnation_counter": stagnation_counter,
+                    "restart_count": restart_count,
+                    "tone_probs": tone_probs,
+                    "best_ever_fitness": best_ever_fitness,
+                    "best_ever_generation": best_ever_generation,
+                    "attacker_calls": attacker_calls,
+                    "defender_calls": defender_calls,
+                    "next_filter_mark": next_filter_mark,
+                    "runtime_sec": runtime_offset + time.time() - start,
+                    "random_state": random.getstate(),
+                    "config": asdict(config),
+                }
             )
 
         if config.target_fitness is not None and best.fitness >= config.target_fitness:
+            stop_reason = "target_fitness"
+            break
+        if budget_spent:
+            stop_reason = "evaluation_budget"
             break
 
     parents = _sort_best_first(parents, config)
@@ -1749,13 +2362,17 @@ def evolutionary_strategy_run(
         best=best,
         population=parents,
         filter_prompt=filter_prompt,
-        runtime_sec=time.time() - start,
+        runtime_sec=runtime_offset + time.time() - start,
         history=history,
         filter_events=filter_events,
         filter_versions=filter_versions,
         sample_records=sample_records,
         lineage_records=lineage_records,
         benign_dataset=benign_provenance,
+        samples_streamed=stream is not None,
+        attacker_calls=attacker_calls,
+        defender_calls=defender_calls,
+        stop_reason=stop_reason,
     )
 
 
