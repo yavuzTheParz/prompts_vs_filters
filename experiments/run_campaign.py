@@ -103,6 +103,9 @@ def build_command(args, phase: str, config: str, seed: int, run_dir: Path, state
         "--seed", str(seed),
         "--max-evaluations", str(args.max_evaluations),
         "--llm-concurrency", str(args.concurrency),
+        # One generation of the large population costs ~540 calls, so checkpoint
+        # every generation: an interruption then loses at most one generation.
+        "--checkpoint-every", "1",
         "--model", args.model,
         "--run-dir", str(run_dir),
         "--history-csv", str(run_dir / "history.csv"),
