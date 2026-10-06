@@ -131,6 +131,16 @@ once per random seed and gives each population size a prefix, so runs that
 share a seed start from nested sets and the seed is a valid block for the
 Friedman test.
 
+### Model server
+
+`llm_server_batched.py` serves the same `/generate` interface as the original
+single-request server but collects waiting requests and generates each group
+with identical settings in one batched call. Start it with
+`uvicorn llm_server_batched:app --host 0.0.0.0 --port 8000` and set the
+launcher's `--concurrency` to the server's `MAX_BATCH_SIZE` (default 16), so
+the batches are full. `scripts/benchmark_server.py` reports the throughput at
+each concurrency level.
+
 ### Campaign launcher
 
 `experiments/run_campaign.py` runs the parameter-analysis campaign: six
