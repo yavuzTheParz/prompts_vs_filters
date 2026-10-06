@@ -1,0 +1,28 @@
+{
+  "legacy": {
+    "first_compliant_generation": 1.0,
+    "early_offspring_success": 0.06319444444444444,
+    "late_offspring_success": 0.009722222222222222,
+    "mean_offspring_success": 0.025694444444444443,
+    "late_offspring_progress": 0.013266319444444443,
+    "best_ever_fitness": 0.8464917027877145,
+    "final_parent_lineages": 1.0,
+    "final_population_diversity": 0.3974006876727726,
+    "zero_best_generations": 15.0,
+    "llm_calls": 5818.666666666667,
+    "filter_versions": 3.6666666666666665
+  },
+  "improved": {
+    "first_compliant_generation": 1.0,
+    "early_offspring_success": 0.07401541051884025,
+    "late_offspring_success": 0.012398922573190278,
+    "mean_offspring_success": 0.038730155910054874,
+    "late_offspring_progress": 0.020560037157529146,
+    "best_ever_fitness": 0.7200108598734821,
+    "final_parent_lineages": 4.0,
+    "final_population_diversity": 0.7887827352024708,
+    "zero_best_generations": 9.333333333333334,
+    "llm_calls": 5619.666666666667,
+    "filter_versions": 3.0
+  }
+}
