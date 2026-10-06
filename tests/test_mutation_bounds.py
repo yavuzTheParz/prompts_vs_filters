@@ -4,6 +4,7 @@ import math
 import unittest
 from unittest.mock import patch
 
+import evolutionary_strategy
 from Prompt_class import Prompt
 from evolutionary_strategy import (
     ESConfig,
@@ -55,6 +56,7 @@ class MutationBoundTests(unittest.TestCase):
             structural_mutation_enabled=False,
             token_mutation_enabled=True,
             max_mutations_per_child=1,
+            mutation_retry_limit=0,
             verbose=False,
         )
 
@@ -86,6 +88,38 @@ class MutationBoundTests(unittest.TestCase):
             )
         )
 
+    def test_noop_mutation_is_retried_until_an_edit_is_accepted(self):
+        parent = controlled_population()[0]
+        outcomes = iter([
+            (parent.input_prompt, "CONTROLLED_NOOP"),
+            (parent.input_prompt, "CONTROLLED_NOOP"),
+        ])
+
+        real_mutate = evolutionary_strategy._lightweight_token_mutate_text
+
+        def mutate(text):
+            try:
+                return next(outcomes)
+            except StopIteration:
+                return real_mutate(text)
+
+        config = ESConfig(
+            lightweight=True,
+            structural_mutation_enabled=False,
+            token_mutation_enabled=True,
+            max_mutations_per_child=1,
+            mutation_retry_limit=3,
+        )
+        with patch(
+            "evolutionary_strategy._lightweight_token_mutate_text",
+            side_effect=mutate,
+        ):
+            child, logs = _mutate_prompt(parent, 1.0, config)
+
+        self.assertEqual(len(logs), 3)
+        self.assertEqual(child.metadata["last_mutation_acceptances"], 1)
+        self.assertNotEqual(child.input_prompt, parent.input_prompt)
+
     def test_320_generation_run_respects_seed_relative_limits(self):
         char_ratio = 1.25
         token_ratio = 1.25
@@ -109,11 +143,20 @@ class MutationBoundTests(unittest.TestCase):
         )
 
         self.assertEqual(len(result.history), 320)
+        retry_limit = ESConfig().mutation_retry_limit
+        operator_rows = [
+            row["mutation_operator"]
+            for row in result.lineage_records
+            if isinstance(row["mutation_operator"], list)
+        ]
+        # The cap bounds applied edits; rejected attempts may be retried.
+        self.assertTrue(
+            all(len(logs) <= 2 + retry_limit for logs in operator_rows)
+        )
         self.assertTrue(
             all(
-                len(row["mutation_operator"]) <= 2
-                for row in result.lineage_records
-                if isinstance(row["mutation_operator"], list)
+                sum("REJECT" not in log for log in logs) <= 2
+                for logs in operator_rows
             )
         )
         for prompt in result.population:

@@ -98,6 +98,7 @@ def assign_outputs(
     max_sample_retries: int = 2,
     generation: int = 0,
     filter_version: int = 0,
+    concurrency: int = 1,
 ) -> List[Dict[str, object]]:
     """
     Populate Prompt.output_prompts and Prompt.direct_output.
@@ -110,12 +111,17 @@ def assign_outputs(
     - output_prompts: generated K times with the defensive filter (ASV/MR evaluation)
 
     If a prompt already has k_evals outputs, it is skipped. This allows resuming partial
-    evaluation runs without redundant API calls.
+    evaluation runs without redundant API calls. A prompt may request more samples
+    through metadata["target_sample_count"] (used for parent resampling).
+
+    concurrency > 1 evaluates prompts in parallel threads. Each prompt's samples
+    stay sequential, and records are returned in prompt order regardless of
+    completion order, so artifacts remain deterministic for a given model output.
     """
     k = _resolve_k_evals(k_evals)
-    new_records: List[Dict[str, object]] = []
 
     def generate_sample(
+        new_records,
         prompt_obj,
         request_prompt,
         prompt_audit,
@@ -172,7 +178,11 @@ def assign_outputs(
             f"{kind} sample {sample_index} failed after {attempts} attempts: {last_error}"
         )
 
-    for prompt_obj in prompts:
+    def process(prompt_obj) -> List[Dict[str, object]]:
+        new_records: List[Dict[str, object]] = []
+        target_k = max(
+            k, int((prompt_obj.metadata or {}).get("target_sample_count", 0) or 0)
+        )
         try:
             prompt_audit = prompt_obj.render_input()
             prompt_obj.metadata["prompt_render"] = prompt_audit.audit_dict()
@@ -181,6 +191,7 @@ def assign_outputs(
             if generate_direct and not getattr(prompt_obj, "direct_output", ""):
                 direct_prompt = f"User:\n{prompt_audit.text}\n\nAssistant:"
                 prompt_obj.direct_output = generate_sample(
+                    new_records,
                     prompt_obj,
                     direct_prompt,
                     prompt_audit,
@@ -199,9 +210,10 @@ def assign_outputs(
             current_outputs = getattr(prompt_obj, "output_prompts", None) or []
             prompt_obj.output_prompts = list(current_outputs)
 
-            while len(prompt_obj.output_prompts) < k:
+            while len(prompt_obj.output_prompts) < target_k:
                 sample_index = len(prompt_obj.output_prompts)
                 assistant_message = generate_sample(
+                    new_records,
                     prompt_obj,
                     combined_prompt,
                     prompt_audit,
@@ -222,5 +234,15 @@ def assign_outputs(
         else:
             prompt_obj.metadata.pop("api_error", None)
             prompt_obj.metadata["valid_llm_response"] = True
+        return new_records
 
-    return new_records
+    prompts = list(prompts)
+    workers = max(1, int(concurrency or 1))
+    if workers == 1 or len(prompts) <= 1:
+        per_prompt = [process(prompt_obj) for prompt_obj in prompts]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(workers, len(prompts))) as pool:
+            per_prompt = list(pool.map(process, prompts))
+    return [record for records in per_prompt for record in records]

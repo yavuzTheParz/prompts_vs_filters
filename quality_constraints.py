@@ -63,31 +63,29 @@ GRAMMAR_ARTIFACT_PATTERNS = (
     r"\btells\s+me\b",
 )
 
-COMMON_FLUENCY_WORDS = {
-    "about", "access", "action", "afresh", "all", "also", "and", "answer", "are",
-    "assistant", "audit", "before", "benign", "can", "check", "clear", "compare",
-    "conservative", "context", "control", "could", "current", "decision", "describe",
-    "design", "detail", "document", "does", "during", "each", "engineer", "environment",
-    "explain", "focus", "follow", "for", "from", "future", "give", "had", "help",
-    "how", "ignore", "instead", "into", "let", "made", "maintainer", "me", "of",
-    "one", "operator", "please", "prior", "provide", "record", "recovery", "request",
-    "review", "safe", "safety", "schedule", "several", "so", "staging", "start",
-    "system", "team", "the", "their", "to", "tradeoff", "understand", "untrusted",
-    "unsafe", "verify", "why", "while", "with", "you",
-}
+# Character-shape signals for machine-garbled tokens. The previous bigram
+# whitelist flagged ordinary English ("explain", "volcano") and rejected 97% of
+# the seed prompts, which zeroed fitness for whole populations. These rules only
+# fire on shapes that real words (and deliberate seed typos) almost never have.
+_GARBLED_VOWELS = frozenset("aeiouy")
+_GARBLED_CONSONANT_RUN_RE = re.compile(r"[bcdfghjklmnpqrstvwxz]{6,}")
+_GARBLED_TRIPLE_CHAR_RE = re.compile(r"([a-z])\1\1")
+GARBLED_MAX_TOKEN_CHARS = 25
 
-DOMAIN_FLUENCY_SUBSTRINGS = (
-    "admin", "attack", "backdoor", "bypass", "credential", "cyber", "exploit",
-    "harm", "instruction", "malware", "policy", "procedure", "protocol", "security",
-    "shell", "system", "unix", "engineering",
-)
 
-COMMON_BIGRAMS = {
-    "an", "ar", "as", "at", "be", "ch", "ck", "co", "ct", "de", "ed", "en",
-    "er", "es", "he", "hi", "in", "io", "is", "it", "le", "ll", "me", "nd",
-    "ng", "nt", "on", "or", "ou", "ow", "pr", "re", "ri", "ro", "sa", "sc",
-    "se", "si", "st", "ta", "te", "th", "ti", "to", "tr", "un", "ve", "wa",
-}
+def is_garbled_token(token: str) -> bool:
+    token = str(token or "").lower()
+    if len(token) < 4 or token.isdigit():
+        return False
+    if any(char.isdigit() for char in token):
+        return True
+    if _GARBLED_TRIPLE_CHAR_RE.search(token):
+        return True
+    if len(token) >= 5 and not any(char in _GARBLED_VOWELS for char in token):
+        return True
+    if _GARBLED_CONSONANT_RUN_RE.search(token):
+        return True
+    return len(token) >= GARBLED_MAX_TOKEN_CHARS
 
 
 def imperative_fragment_count(text: str) -> int:
@@ -112,25 +110,10 @@ def grammar_artifact_count(text: str) -> int:
 
 
 def garbled_token_ratio(text: str) -> float:
-    tokens = [token for token in normalized_tokens(text) if len(token) >= 4]
+    tokens = [token for token in _tokens(text) if len(token) >= 4]
     if not tokens:
         return 0.0
-
-    suspicious = 0
-    for token in tokens:
-        if token in COMMON_FLUENCY_WORDS:
-            continue
-        if any(marker in token for marker in DOMAIN_FLUENCY_SUBSTRINGS):
-            continue
-        bigrams = [token[index : index + 2] for index in range(len(token) - 1)]
-        rare_ratio = (
-            sum(1 for bigram in bigrams if bigram not in COMMON_BIGRAMS)
-            / max(1, len(bigrams))
-        )
-        vowel_ratio = sum(1 for char in token if char in "aeiou") / len(token)
-        if rare_ratio >= 0.35 or vowel_ratio < 0.20:
-            suspicious += 1
-    return suspicious / len(tokens)
+    return sum(1 for token in tokens if is_garbled_token(token)) / len(tokens)
 
 
 def fluency_score(text: str, phrase_ngram_size: int = 2) -> float:
@@ -299,10 +282,30 @@ def apply_quality_constraints(
     return reasons
 
 
+def clear_near_duplicate_marks(population: Iterable[Prompt]) -> None:
+    """Restore prompts whose only invalidity was a ranking-relative duplicate mark."""
+    for prompt in population:
+        metrics = prompt.metrics
+        if metrics.get("validity_reason") == "near_duplicate":
+            metrics["valid"] = 1.0
+            metrics["validity_reason"] = "valid"
+            prompt.fitness = float(metrics.pop("pre_duplicate_fitness", 0.0))
+
+
 def mark_near_duplicates(population: Iterable[Prompt], threshold: float = 0.05) -> Counter:
+    """Invalidate lower-ranked near duplicates of earlier prompts.
+
+    Duplicate status is relative to the current ranking, so a mark from an
+    earlier ranking is cleared first; otherwise a parent stays zeroed forever
+    after the prompt it duplicated has left the population.
+    """
+    prompts = list(population)
+    clear_near_duplicate_marks(prompts)
     seen: List[Prompt] = []
     reasons = Counter()
-    for prompt in population:
+    for prompt in prompts:
+        if prompt.metrics.get("valid", 1.0) <= 0.0:
+            continue
         if any(
             token_distance(
                 _quality_text(prompt)[0],
@@ -311,6 +314,7 @@ def mark_near_duplicates(population: Iterable[Prompt], threshold: float = 0.05) 
             <= threshold
             for prior in seen
         ):
+            prompt.metrics["pre_duplicate_fitness"] = float(prompt.fitness)
             prompt.metrics["valid"] = 0.0
             prompt.metrics["validity_reason"] = "near_duplicate"
             prompt.fitness = 0.0

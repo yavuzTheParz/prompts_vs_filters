@@ -11,3 +11,9 @@ __pycache__/
 venv/
 __pycache__/
 *.pyc
+
+# Run artefacts that are large or only useful for resuming
+checkpoint.pkl
+stdout.log
+outputs/simulated_ab.log
+outputs/simulated_ab/*/samples.jsonl

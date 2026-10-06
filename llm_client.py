@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 import json
+import threading
 import time
 from urllib import error, request
 
@@ -19,11 +20,20 @@ class LocalLLMClient:
     timeout_sec: int = 300
     max_connect_retries: int = 3
 
-    _session: Any = field(init=False, repr=False, default=None)
+    _local: Any = field(init=False, repr=False, default=None)
 
     def __post_init__(self) -> None:
-        if requests is not None:
-            self._session = requests.Session()
+        # requests.Session is not guaranteed thread-safe; concurrent evaluation
+        # gives each worker thread its own pooled session.
+        self._local = threading.local()
+
+    @property
+    def _session(self):
+        session = getattr(self._local, "session", None)
+        if session is None and requests is not None:
+            session = requests.Session()
+            self._local.session = session
+        return session
 
     def generate(
         self,

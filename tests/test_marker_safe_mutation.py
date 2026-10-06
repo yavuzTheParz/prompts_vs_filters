@@ -147,6 +147,7 @@ class MarkerSafeMutationTests(unittest.TestCase):
             sigma_max=1.0,
             structural_mutation_enabled=False,
             token_mutation_enabled=True,
+            mutation_retry_limit=0,
         )
         malformed = (
             "[[STYLE_PREFIX:imperative]]Require "
