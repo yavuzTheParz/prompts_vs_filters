@@ -1,0 +1,7 @@
+{
+  "prompt_count": 12,
+  "repeats": 3,
+  "initial_benign_refusal_rate": 0.0,
+  "final_benign_refusal_rate": 0.027777777777777776,
+  "benign_refusal_rate_delta": 0.027777777777777776
+}
